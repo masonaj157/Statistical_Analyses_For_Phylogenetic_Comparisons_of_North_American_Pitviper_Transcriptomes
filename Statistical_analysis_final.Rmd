@@ -1,0 +1,1659 @@
+---
+title: "Crotalus_reanalysis_pathmodels"
+output: html_document
+---
+
+Let's set the working directory and import the 
+```{r setup, include=FALSE}
+# Initial packages and set working directory 
+
+library(ape)
+library( phytools )
+library( vegan )
+library( picante )
+library("compositions")
+library("zCompositions")
+library("EnvStats")
+library( asbio )
+library( doParallel )
+library( foreach )
+library( stringr )
+library( tidyverse )
+library( dplyr )
+library( phylolm )
+
+# Set system computational parameters
+	cores = detectCores() - 1
+	if ( cores < 1 ) {cores = 1}
+
+	# Register parallel workers for %dopar%
+	registerDoParallel( cores )
+
+
+setwd('~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis')
+
+```
+
+# Define Functions
+Functions we will use for analysis
+```{r Define Functions, include=FALSE}
+
+## Average per species
+Average_per_species = function( toxin_counts_object, species ){
+  ## subset toxin_counts_object to species
+  tmp<-subset(toxin_counts_object,toxin_counts_object$Species == species)
+  ave_toxins<-mean(tmp$Toxin_count)
+  ave_output<-tibble(species,ave_toxins)
+  return(ave_output)
+}
+
+
+## Average toxin counts
+Average_toxins_count = function(toxin_counts_object){
+  ## create list of species
+  species_list<-unique(toxin_counts_object$Species)
+  
+  Averages_output = foreach(species = species_list) %dopar%
+    Average_per_species( toxin_counts_object, species)
+  
+  Averages_output<-bind_rows(Averages_output)
+  
+  return(Averages_output)
+}
+
+## calculate kmer diversity
+calculate_kmer_diversity = function(kmer_counts_object,sample){
+  ### subset to species
+  tmp<-subset(kmer_counts_object,kmer_counts_object$Sample == sample)
+  ### Find the species and make sure there is only 1 unique value
+  species = unique(tmp$Species)
+  if (length(species) > 1) stop('you have this sample listed as more than one species')
+  ### transpose the data to calculate H
+  tmp<-tmp[,3:4]
+  transposed_kmers<-tmp[,1]
+  tmp<-t(tmp[,2])
+  colnames(tmp) = transposed_kmers
+
+  ### calculate H as effective number of kmers
+  H <- exp(diversity(tmp))
+  #### Format output entry
+  H_output<-tibble(sample,species,H)
+  return(H_output)
+}
+
+
+## Summarize kmer diversity
+Summarize_kmer_diversity = function(kmer_counts_object){
+  ### create list of individuals
+  individuals_list<-unique(kmer_counts_object$Sample)
+  
+  kmers_output = foreach(sample = individuals_list) %dopar%
+    calculate_kmer_diversity(kmer_counts_object,sample)
+  
+  kmers_output <- bind_rows(kmers_output)
+  
+  return(kmers_output)
+}
+
+
+## format kmer diversity table
+format_kmer_diversity_table = function(Kmer_diversity){
+  ### create list of species
+  species<-unique(Kmer_diversity$species)
+  ###subset by individuls
+  df <- data.frame(Species = factor(),Ave_H=numeric(),Stdev_H=numeric())
+  for (i in species){
+    tmp<-subset(Kmer_diversity,Kmer_diversity$species == i)
+    Ave_H<-mean(tmp$H)
+    Stdev_H<-sd(tmp$H)
+    output<-tibble(i,Ave_H,Stdev_H)
+    df<-rbind(df,output)
+  }
+  return(df)
+}
+
+
+## calculate clrTPM
+calculate_clrTPM = function(RSEM,Sample){
+   ### subset list by sample
+  tmp<-subset(RSEM,RSEM$ID==Sample)
+  gm = geoMean(tmp$TPM)
+  clr=log((tmp$TPM / gm))
+  tmp<-cbind(tmp,clr)
+  return(tmp)
+}
+
+
+## calculate toxin percentages
+calc_Toxin_percents = function(RSEM,Sample){
+  ### subset list by sample
+  tmp<-subset(RSEM,RSEM$ID==Sample)
+  ### subset to toxins
+  tmp<-subset(tmp,tmp$Toxin_Nontoxin=='Toxin')
+  total_TPM = sum(tmp$TPM)
+  tox_perc = tmp$TPM / total_TPM * 100
+  tmp<-cbind(tmp,tox_perc)
+  return(tmp)
+}
+
+
+## Summarize toxin expression
+summarize_toxin_expression = function(RSEM){
+  ### create list of individuals
+  individuals_list<-unique(RSEM$ID)
+  
+  rsem_output1 = foreach(sample = individuals_list) %dopar%
+    calculate_clrTPM(RSEM,sample)
+  
+  rsem_output_table1 <- bind_rows(rsem_output1)
+  
+  rsem_output2 = foreach(sample = individuals_list) %dopar%
+    calc_Toxin_percents(rsem_output_table1,sample)
+  
+  rsem_output_table2 <- bind_rows(rsem_output2)
+  
+  return(rsem_output_table2)
+}
+
+
+## Calculate expression diversiity
+calculate_expression_evenness = function(RSEM_summary,Sample){
+  ### subset list by sample
+  tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
+  Species<-unique(tmp$Species)
+  ### colnames
+  transcript_names = tmp$Transcript
+  
+  ### transpose
+  tmp_TPM <- t(tmp$TPM)
+  colnames(tmp_TPM) = transcript_names
+  TPM_H <- exp(diversity(tmp_TPM))
+  
+  tmp$clr<-tmp$clr+abs(min(tmp$clr))
+  tmp_clrTPM <- t(tmp$clr)
+  colnames(tmp_clrTPM) = transcript_names
+
+  clr_H <- exp(diversity(tmp_clrTPM))
+  
+  tmp_percTPM <- t(tmp$tox_perc)
+  colnames(tmp_percTPM) = transcript_names
+  perc_H <- exp(diversity(tmp_percTPM))
+
+  output<-tibble(Sample,Species,TPM_H,clr_H,perc_H)
+  return(output)
+}
+
+
+## Format expression evenness
+format_expression_evenness = function(RSEM_summary){
+  ### create list of individuals
+  individuals_list<-unique(RSEM_summary$ID)
+  
+  evenness_output = foreach(sample = individuals_list) %dopar%
+    calculate_expression_evenness(RSEM_summary,sample)
+  
+   evenness_output <- bind_rows( evenness_output)
+  
+  return( evenness_output )
+}
+
+
+## Format species expression evenness
+format_species_expression_evenness = function(RSEM_sample_evenness){
+    ### create list of speciies
+  species<-unique(RSEM_sample_evenness$Species)
+  ###subset by individuls
+  df <- data.frame(Species = factor(),Ave_TPM_H=numeric(),Stdev_TPM_H=numeric(),
+                   Ave_clr_H=numeric(),Stdev_clr_H=numeric(),Ave_perc_H=numeric(),Stdev_perc_H=numeric())
+  ### for species loop
+  for (i in species){
+    tmp<-subset(RSEM_sample_evenness,RSEM_sample_evenness$Species == i)
+    Ave_TPM_H<-mean(tmp$TPM_H)
+    Stdev_TPM_H<-sd(tmp$TPM_H)
+    Ave_clr_H<-mean(tmp$clr_H)
+    Stdev_clr_H<-sd(tmp$clr_H)
+    Ave_perc_H<-mean(tmp$perc_H)
+    Stdev_perc_H<-sd(tmp$perc_H)
+    output<-tibble(i,Ave_TPM_H,Stdev_TPM_H,Ave_clr_H,Stdev_clr_H,Ave_perc_H,Stdev_perc_H)
+    df<-rbind(df,output)
+  }
+  return(df)
+}
+
+
+## Summarize RSEM metric by family for individual
+## Note, check if this is actually being used anywhere
+summarize_RSEM_metric_by_family_for_individual = function(RSEM_summary,individual,metric, family_list)###Family list is a list of Toxin Family designations. Families not listed in this list will be considered 'other'. Metric has to be a column name in RSEM_summary
+{
+  indiv_RSEM_summary = subset(RSEM_summary,RSEM_summary$ID == individual)
+  values_list=c()
+  values[['ID']] <- individual
+  for (i in family_list){
+    family_summary = subset(indiv_RSEM_summary,indiv_RSEM_summary$Toxin_Class == i)
+    total=sum(family_summary$metric)
+    values[[i]]<-total
+  }
+  
+  others = subset(indiv_RSEM_summary,(indiv_RSEM_summary$Toxin_Class %in% family_list) == 'FALSE')
+  total=sum(others$metric)
+  values[['Other']]<-total
+  
+}
+
+
+
+
+Toxin_family_diversity = function(toxin_RSEM_summary){
+  families_RSEM=data.frame(ID=factor(),Species=factor(),                             Toxin_Nontoxin=factor(),Toxin_Class=factor(),Transcript_num=numeric(),
+                             TPM=numeric(),clr=numeric(),tox_perc=numeric())
+  for (id in unique(toxin_RSEM_summary$ID)){
+    tmp_RSEM<-subset(toxin_RSEM_summary,toxin_RSEM_summary$ID == id)
+    for (family in unique(tmp_RSEM$Toxin_Class)){
+      family_RSEM<-subset(tmp_RSEM,tmp_RSEM$Toxin_Class == family)
+      num_tranrscripts<-nrow(family_RSEM)
+      total_TPM<-sum(family_RSEM$TPM)
+      total_clr<-sum(family_RSEM$clr)
+      total_tox_per<-sum(family_RSEM$tox_perc)
+      new_row<-tibble_row(id,family_RSEM[1,2],family_RSEM[1,4],family,
+                num_tranrscripts,total_TPM,total_clr,total_tox_per)
+      families_RSEM<-rbind(families_RSEM,new_row)
+    }
+  }
+  colnames(families_RSEM)<-c('ID','Species','Toxin_Nontoxin','Toxin_Class','Transcript_num','TPM','clr','tox_perc')
+  return(families_RSEM)
+  }
+
+
+
+## Calculate expression evenness of familiess
+calculate_expression_evenness_family = function(RSEM_summary,Sample){
+  ### subset list by sample
+  tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
+  Species<-unique(tmp$Species)
+  if (length(table(grepl('SVMP',unique(tmp$Toxin_Class)))) > 1){
+    SVMP_classes<-table(grepl('SVMP',unique(tmp$Toxin_Class)))[2]
+    extra_SVMPs<-(SVMP_classes-1)
+  }
+  else {extra_SVMPs<-0}
+  Families_count<-nrow(tmp)-extra_SVMPs
+  ### colnames
+  family_names = tmp$Toxin_Class
+  
+  tmp_Transcript_num<-t(tmp$Transcript_num)
+  colnames(tmp_Transcript_num) = family_names
+  Trans_num_H<-exp(diversity(tmp_Transcript_num))
+    
+  ### transpose
+  tmp_TPM <- t(tmp$TPM)
+  colnames(tmp_TPM) = family_names
+  TPM_H <- exp(diversity(tmp_TPM))
+  
+  tmp$clr<-tmp$clr+abs(min(tmp$clr))
+  tmp_clrTPM <- t(tmp$clr)
+  colnames(tmp_clrTPM) = family_names
+
+  clr_H <- exp(diversity(tmp_clrTPM))
+  
+  tmp_percTPM <- t(tmp$tox_perc)
+  colnames(tmp_percTPM) = family_names
+  perc_H <- exp(diversity(tmp_percTPM))
+
+  output<-tibble(Sample,Species,Families_count,Trans_num_H,TPM_H,clr_H,perc_H)
+  return(output)
+}
+
+
+
+##Summarize_venom_diversity_by_family_expression
+Summarize_venom_diversity_by_family_expression = function(toxin_RSEM_summary){
+  Family_diversity_table=data.frame(ID=factor(),Species=factor(), Families_count=numeric(),                            Trans_num_H=numeric(),TPM_H=numeric(),clr_H=numeric(),perc_H=numeric())
+  tmp_family_rsem_summary<-Toxin_family_diversity(toxin_RSEM_summary)
+  
+  for (id in unique(tmp_family_rsem_summary$ID)){
+    new_row<-calculate_expression_evenness_family(tmp_family_rsem_summary,id)
+    Family_diversity_table<-rbind(Family_diversity_table,new_row)
+    
+  }
+  return(Family_diversity_table)
+}
+
+
+
+## Format species expression evenness for toxin families
+format_species_expression_evenness_family = function(RSEM_sample_evenness){
+    ### create list of species
+  species<-unique(RSEM_sample_evenness$Species)
+  ###subset by individuls
+  df <- data.frame(Species = factor(), Ave_Families_count=numeric(),Ave_Trans_num=numeric(),Stdev_Trans_num=numeric(),
+                   Ave_TPM_H=numeric(),Stdev_TPM_H=numeric(),
+                   Ave_clr_H=numeric(),Stdev_clr_H=numeric(),Ave_perc_H=numeric(),Stdev_percH=numeric())
+  ### for species loop
+  for (i in species){
+    tmp<-subset(RSEM_sample_evenness,RSEM_sample_evenness$Species == i)
+    Ave_Families_count<-mean(tmp$Families_count)
+    Ave_Trans_num<-mean(tmp$Trans_num_H)
+    Std_Trans_num<-sd(tmp$Trans_num_H)
+    Ave_TPM_H<-mean(tmp$TPM_H)
+    Stdev_TPM_H<-sd(tmp$TPM_H)
+    Ave_clr_H<-mean(tmp$clr_H)
+    Stdev_clr_H<-sd(tmp$clr_H)
+    Ave_perc_H<-mean(tmp$perc_H)
+    Stdev_perc_H<-sd(tmp$perc_H)
+    output<-tibble(i,Ave_Families_count,Ave_Trans_num,Std_Trans_num,Ave_TPM_H,Stdev_TPM_H,Ave_clr_H,Stdev_clr_H,Ave_perc_H,Stdev_perc_H)
+    df<-rbind(df,output)
+  }
+  return(df)
+}
+
+
+
+
+## Toxin expression MPD clr
+Toxin_expression_MPD_clr = function(toxin_RSEM_summary, tree) ##
+{ Individual_transcript_matrix<-matrix(nrow=length(unique(toxin_RSEM_summary$ID)), ncol=length(toxin_RSEM_summary$Transcript), dimnames = list(unique(toxin_RSEM_summary$ID), toxin_RSEM_summary$Transcript))
+
+  if (min(toxin_RSEM_summary$clr) <= 0)
+    {toxin_RSEM_summary$clr=toxin_RSEM_summary$clr+abs(min(toxin_RSEM_summary$clr))+1}
+
+  for (i in 1:nrow(toxin_RSEM_summary)){
+    species_list<-c()
+    for (indiv in unique(toxin_RSEM_summary$ID)){
+      indiv_set<-subset(toxin_RSEM_summary,toxin_RSEM_summary$ID == indiv)
+      species_list<-c(species_list,as.character(indiv_set$Species[1]))
+    } 
+    
+    Individual_transcript_matrix[as.character(toxin_RSEM_summary$ID[i]),as.character(toxin_RSEM_summary$Transcript[i])] <- toxin_RSEM_summary$clr[i]
+  }
+  
+  Individual_transcript_matrix[is.na(Individual_transcript_matrix)] <- 0
+
+  mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = FALSE))
+  weighted_mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = TRUE))
+  ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(tree),null.model=c("taxa.labels"),abundance.weighted = FALSE))
+  weighted.ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(tree),null.model=c("taxa.labels"),abundance.weighted = TRUE))
+  
+  mpd_table<-cbind(unique(toxin_RSEM_summary$ID),species_list,mpd,weighted_mpd,ses.mpd$mpd.obs.z,weighted.ses.mpd$mpd.obs.z)
+  row.names(mpd_table)<-unique(toxin_RSEM_summary$ID)
+  colnames(mpd_table)<-c('ID','Species','mpd','weighted_mpd','ses.mpd.z','weighted.ses.mpd.z')
+  
+  return(mpd_table)
+}
+
+
+## Toxin expression MPD clr_v2
+Toxin_expression_MPD_clr_v2 = function(toxin_RSEM_summary, tree) ##
+{ mpd_table =data.frame(placeholder1=character(),placeholder2=character(),placeholder3=numeric(),
+                        placeholder4=numeric(),
+                             placeholder5=numeric(),placeholder6=numeric())
+  
+  if (min(toxin_RSEM_summary$clr) <= 0)
+    {toxin_RSEM_summary$clr=toxin_RSEM_summary$clr+abs(min(toxin_RSEM_summary$clr))+1}
+
+  
+  ###Make species list
+  species_list<-unique(toxin_RSEM_summary$Species)
+  ### Now, for each species, subset to only that species, prune the tree to the set of genes, and make the mpd calucation
+  ### then bind the result for each individual
+  for (i in species_list){
+    species_specific_tab<-subset(toxin_RSEM_summary,toxin_RSEM_summary$Species == i)
+    tips_to_drop<-tree$tip.label[which(!tree$tip.label %in% species_specific_tab$Transcript)]
+    pruned_toxin_tree<-drop.tip(tree,tips_to_drop)
+    
+    ### Make empty matrix. Columns will be species transcripts, rows will be individuals
+    Individual_transcript_matrix<-matrix(nrow=length(unique(species_specific_tab$ID)), ncol=length(species_specific_tab$Transcript), dimnames = list(unique(species_specific_tab$ID), species_specific_tab$Transcript))
+    
+    ### Now fill the table with the clr values
+    for (j in 1:nrow(species_specific_tab)){
+    new_species_list<-c()
+    
+    Individual_transcript_matrix[as.character(species_specific_tab$ID[j]),as.character(species_specific_tab$Transcript[j])] <- species_specific_tab$clr[j]
+  }
+  
+  Individual_transcript_matrix[is.na(Individual_transcript_matrix)] <- 0
+
+  mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(pruned_toxin_tree),abundance.weighted = FALSE))
+
+  weighted_mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(pruned_toxin_tree),abundance.weighted = TRUE))
+
+  if(length(unique(species_specific_tab$ID)) > 1){
+  ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(pruned_toxin_tree),abundance.weighted = FALSE))}
+  
+  if(length(unique(species_specific_tab$ID)) > 1){
+  weighted.ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(pruned_toxin_tree),abundance.weighted = TRUE))}
+
+  
+  if(length(unique(species_specific_tab$ID)) > 1){  species_mpd_table<-cbind(unique(species_specific_tab$ID),i,mpd,weighted_mpd,ses.mpd$mpd.obs.z,weighted.ses.mpd$mpd.obs.z)}
+  else {species_mpd_table<-cbind(unique(species_specific_tab$ID),i,mpd,weighted_mpd,0,0)}
+  row.names(species_mpd_table)<-unique(species_specific_tab$ID)
+  colnames(species_mpd_table)<-c('ID','Species','mpd','weighted_mpd','ses.mpd.z','weighted.ses.mpd.z')
+  mpd_table<-rbind(mpd_table,species_mpd_table)
+  
+  }
+colnames(mpd_table)<-c('ID','Species','mpd','weighted_mpd','ses.mpd.z','weighted.ses.mpd.z')
+return(mpd_table)
+}
+
+
+## Toxin expression MPD TPM
+Toxin_expression_MPD_TPM = function(toxin_RSEM_summary, tree) ##
+{ Individual_transcript_matrix<-matrix(nrow=length(unique(toxin_RSEM_summary$ID)), ncol=length(toxin_RSEM_summary$Transcript), dimnames = list(unique(toxin_RSEM_summary$ID), toxin_RSEM_summary$Transcript))
+
+  for (i in 1:nrow(toxin_RSEM_summary)){
+    species_list<-c()
+    for (indiv in unique(toxin_RSEM_summary$ID)){
+      indiv_set<-subset(toxin_RSEM_summary,toxin_RSEM_summary$ID == indiv)
+      species_list<-c(species_list,as.character(indiv_set$Species[1]))
+    } 
+    
+    Individual_transcript_matrix[as.character(toxin_RSEM_summary$ID[i]),as.character(toxin_RSEM_summary$Transcript[i])] <- toxin_RSEM_summary$TPM[i]
+  }
+  
+  Individual_transcript_matrix[is.na(Individual_transcript_matrix)] <- 0
+
+  mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = FALSE))
+  weighted_mpd<-as.data.frame(mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = TRUE))
+  ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = FALSE))
+  weighted.ses.mpd<-as.data.frame(ses.mpd(Individual_transcript_matrix,cophenetic(tree),abundance.weighted = TRUE))
+  
+  mpd_table<-cbind(unique(toxin_RSEM_summary$ID),species_list,mpd,weighted_mpd,ses.mpd$mpd.obs.z,weighted.ses.mpd$mpd.obs.z)
+  row.names(mpd_table)<-unique(toxin_RSEM_summary$ID)
+  colnames(mpd_table)<-c('ID','Species','mpd','weighted_mpd','ses.mpd.z','weighted.ses.mpd.z')
+  
+  return(mpd_table)
+}
+
+
+## Summarize toxin MPD species
+summarize_toxin_MPD_species = function(toxin_mpd_table)
+{ toxin_mpd_table<-na.omit(toxin_mpd_table)
+  species_output =data.frame(Species=character(),mpd=numeric(),weighted_mpd=numeric(),
+                             ses.mpd.z=numeric(),weighted.ses.mpd.z=numeric())
+  
+  for (species in unique(toxin_mpd_table$Species)){
+    species_tab<-subset(toxin_mpd_table,toxin_mpd_table$Species == species)
+    mpd<-mean(species_tab$mpd)
+    weighted_mpd<-mean(species_tab$weighted_mpd)
+    ses.mpd.z<-mean(species_tab$ses.mpd.z)
+    weighted.ses.mpd.z<-mean(species_tab$weighted.ses.mpd.z)
+    row<-tibble_row(species, mpd,weighted_mpd,ses.mpd.z,weighted.ses.mpd.z)
+    
+    species_output<-rbind(species_output, row)
+  }
+    return(species_output)
+}
+
+
+
+mpd.mod=function (samp, dis, abundance.weighted = FALSE) 
+{
+  N <- dim(samp)[1]
+  mpd <- numeric(N)
+  for (i in 1:N) {
+    sppInSample <- names(samp[i, samp[i, ] > 0])
+    if (length(sppInSample) > 1) {
+      sample.dis <- dis[sppInSample, sppInSample]
+      if (abundance.weighted) {
+        sample.weights <- t(as.matrix(samp[i, sppInSample, 
+          drop = FALSE])) %*% as.matrix(samp[i, sppInSample, 
+          drop = FALSE])
+        mpd[i] <- weighted.mean(sample.dis, sample.weights)
+      }
+      else {
+        mpd[i] <- mean(sample.dis[lower.tri(sample.dis)])
+      }
+    }
+    else {
+      mpd[i] <- 0
+    }
+  }
+  mpd
+}
+
+
+
+ses.mpd.mod=function (samp, dis, null.model = c("taxa.labels", "richness", 
+  "frequency", "sample.pool", "phylogeny.pool", "independentswap", 
+  "trialswap"), abundance.weighted = FALSE, runs = 999, iterations = 1000) 
+{
+  dis <- as.matrix(dis)
+  mpd.obs <- mpd.mod(samp, dis, abundance.weighted = abundance.weighted)
+  null.model <- match.arg(null.model)
+  mpd.rand <- switch(null.model, taxa.labels = t(replicate(runs, 
+    mpd.mod(samp, taxaShuffle(dis), abundance.weighted = abundance.weighted))), 
+    richness = t(replicate(runs, mpd.mod(randomizeMatrix(samp, 
+      null.model = "richness"), dis, abundance.weighted))), 
+    frequency = t(replicate(runs, mpd.mod(randomizeMatrix(samp, 
+      null.model = "frequency"), dis, abundance.weighted))), 
+    sample.pool = t(replicate(runs, mpd.mod(randomizeMatrix(samp, 
+      null.model = "richness"), dis, abundance.weighted))), 
+    phylogeny.pool = t(replicate(runs, mpd.mod(randomizeMatrix(samp, 
+      null.model = "richness"), taxaShuffle(dis), abundance.weighted))), 
+    independentswap = t(replicate(runs, mpd.mod(randomizeMatrix(samp, 
+      null.model = "independentswap", iterations), dis, 
+      abundance.weighted))), trialswap = t(replicate(runs, 
+      mpd(randomizeMatrix(samp, null.model = "trialswap", 
+        iterations), dis, abundance.weighted))))
+  mpd.rand.mean <- apply(X = mpd.rand, MARGIN = 2, FUN = mean, 
+    na.rm = TRUE)
+  mpd.rand.sd <- apply(X = mpd.rand, MARGIN = 2, FUN = sd, 
+    na.rm = TRUE)
+  mpd.obs.z <- (mpd.obs - mpd.rand.mean)/mpd.rand.sd
+  mpd.obs.z[is.na(mpd.obs.z)] <-0
+  mpd.obs.rank <- apply(X = rbind(mpd.obs, mpd.rand), MARGIN = 2, 
+    FUN = rank)[1, ]
+  mpd.obs.rank <- ifelse(is.na(mpd.rand.mean), NA, mpd.obs.rank)
+  data.frame(ntaxa = specnumber(samp), mpd.obs, mpd.rand.mean, 
+    mpd.rand.sd, mpd.obs.rank, mpd.obs.z, mpd.obs.p = mpd.obs.rank/(runs + 
+      1), runs = runs, row.names = row.names(samp))
+}
+
+
+
+
+## Calculate expression evenness of familiess
+calculate_total_expression_family = function(RSEM_summary,tox_fam,Sample){
+  ### subset list by sample
+  tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
+  tmp<-subset(tmp,grepl(tox_fam,tmp$Transcript)==TRUE)
+  Species<-unique(tmp$Species)
+  
+  Tox_numbers<-nrow(tmp)
+  
+  sum_TPM<-sum(tmp$TPM)
+  mean_TPM<-mean(tmp$TPM)
+  sd_TPM<-sd(tmp$TPM)
+  
+  sum_clrTPM<-sum(tmp$clr)
+  mean_clrTPM<-mean(tmp$clr)
+  sd_clrTPM<-sd(tmp$clr)
+  
+  sum_perc<-sum(tmp$tox_perc)
+  mean_perc<-mean(tmp$tox_perc)
+  sd_perc<-sd(tmp$tox_perc)
+  
+  
+  output<-tibble(Sample,Species,tox_fam,Tox_numbers,sum_TPM,mean_TPM,sd_TPM,sum_clrTPM,
+                 mean_clrTPM,sd_clrTPM,sum_perc,mean_perc,sd_perc)
+  return(output)
+}
+
+
+
+##Summarize_venom_diversity_by_family_expression
+Summarize_expression_by_family_expression = function(RSEM_summary,tox_fam){
+  Family_table=data.frame(ID=factor(),Species=factor(), Toxin_family=factor(),Tox_count=numeric(),                            sum_TPM=numeric(),mean_TPM=numeric(),sd_TPM=numeric(),sum_clrTPM=numeric(),
+                      mean_clrTPM=numeric(),sd_clrTPM=numeric(), sum_perc=numeric(), mean_perc=numeric(), sd_perc=numeric())
+  
+  for (id in unique(RSEM_summary$ID)){
+    new_row<-calculate_total_expression_family(RSEM_summary,tox_fam,id)
+    Family_table<-rbind(Family_table,new_row)
+    
+  }
+  return(Family_table)
+}
+
+
+
+## Format species expression evenness for toxin families
+format_species_expression_family = function(RSEM_family_sample_total){
+    ### create list of species
+  species<-unique(RSEM_family_sample_total$Species)
+  ###subset by individuls
+  df <- data.frame(Species = factor(),tox_family = factor(), Tox_count=numeric(),                            sum_TPM=numeric(),mean_TPM=numeric(),sd_TPM=numeric(),sum_clrTPM=numeric(),
+                      mean_clrTPM=numeric(),sd_clrTPM=numeric(), sum_perc=numeric(), mean_perc=numeric(), sd_perc=numeric())
+  ### for species loop
+  for (i in species){
+    tmp<-subset(RSEM_family_sample_total,RSEM_family_sample_total$Species == i)
+    Ave_Tox_count<-mean(tmp$Tox_numbers)
+    Ave_sum_TPM<-mean(tmp$sum_TPM)
+    Ave_mean_TPM<-mean(tmp$mean_TPM)
+    Ave_sd_TPM<-mean(tmp$sd_TPM)
+    Ave_sum_clrTPM<-mean(tmp$sum_clrTPM)
+    Ave_mean_clrTPM<-mean(tmp$mean_clrTPM)
+    Ave_sd_clrTPM<-mean(tmp$sd_clrTPM)
+    Ave_sum_perc<-mean(tmp$sum_perc)
+    Ave_mean_perc<-mean(tmp$mean_perc)
+    Ave_sd_perc<-mean(tmp$sd_perc)
+    
+    output<-tibble(i,Ave_Tox_count,Ave_sum_TPM,Ave_mean_TPM,Ave_sd_TPM,Ave_sum_clrTPM,Ave_mean_clrTPM,Ave_sd_clrTPM,Ave_sum_perc,Ave_mean_perc,Ave_sd_perc)
+    df<-rbind(df,output)
+  }
+  return(df)
+}
+
+
+```
+
+
+
+
+#Import and Format Data
+The first section of the code will deal with importing the data and computing the summary statistics
+
+Import Gene number data and expression data
+```{r Import Gene number data and expression data, include=FALSE}
+## rsem data
+RSEM<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/6.1_Final_RSEM_lineage.csv")
+## Drop 0 values
+RSEM<-subset(RSEM,RSEM$TPM > 0)
+
+Toxin_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/5.3_Final_indiv_toxincount.csv")
+
+clustered_Toxin_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/5.4_Final_indiv_toxincount_clustered_lineages.csv")
+clustered_Toxin_counts<-clustered_Toxin_counts[-c(73),]
+
+Toxin_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/7.1_toxin_kmers_clustered_lineage.txt", quote="\"", comment.char="")
+colnames(Toxin_kmers) = c('Sample','Species','kmer','count')
+```
+
+
+Use the self-made functions to create new dataframes that summarize data
+```{r Use the self-made functions to create new dataframes that summarize data, include=FALSE}
+Ave_Toxin_Counts<-Average_toxins_count(Toxin_counts)
+Ave_clustered_Toxin_Counts<-Average_toxins_count(clustered_Toxin_counts)
+
+Kmer_diversity<-Summarize_kmer_diversity(Toxin_kmers)
+Kmer_diversity_table<-format_kmer_diversity_table(Kmer_diversity)
+
+RSEM_summary<- summarize_toxin_expression(RSEM)
+RSEM_sample_evenness<-format_expression_evenness(RSEM_summary)
+RSEM_species_evenness<-format_species_expression_evenness(RSEM_sample_evenness)
+
+
+RSEM_family_sample_diversity<-Summarize_venom_diversity_by_family_expression(RSEM_summary)
+RSEM_family_species_diversity<-format_species_expression_evenness_family(RSEM_family_sample_diversity)
+
+## just to include sample numbers
+Species_sample_numbers<-data.frame(table(RSEM_sample_evenness$Species))
+
+## Format all these as datatables
+Ave_clustered_Toxin_Counts<-as.data.frame(Ave_clustered_Toxin_Counts)
+Kmer_diversity_table<-as.data.frame(Kmer_diversity_table)
+RSEM_species_evenness<-as.data.frame(RSEM_species_evenness)
+RSEM_family_species_diversity<-as.data.frame(RSEM_family_species_diversity)
+Species_sample_numbers<-as.data.frame(Species_sample_numbers)
+
+
+CTL_expression_sample<-Summarize_expression_by_family_expression(RSEM_summary,'CTL')
+CTL_expression_species<-format_species_expression_family(CTL_expression_sample)
+CTL_expression_species<-cbind(CTL_expression_species,rep('CTL',nrow(CTL_expression_species)))
+names(CTL_expression_species)[names(CTL_expression_species) == "rep(\"CTL\", nrow(CTL_expression_species))"] <- "Toxin_Family"
+CTL_expression_species<-as.data.frame(CTL_expression_species)
+
+PLA2_expression_sample<-Summarize_expression_by_family_expression(RSEM_summary,'PLA2')
+PLA2_expression_species<-format_species_expression_family(PLA2_expression_sample)
+PLA2_expression_species<-cbind(PLA2_expression_species,rep('PLA2',nrow(PLA2_expression_species)))
+names(PLA2_expression_species)[names(PLA2_expression_species) == "rep(\"PLA2\", nrow(PLA2_expression_species))"] <- "Toxin_Family"
+PLA2_expression_species<-as.data.frame(PLA2_expression_species)
+
+SVMP_expression_sample<-Summarize_expression_by_family_expression(RSEM_summary,'SVMP')
+SVMP_expression_species<-format_species_expression_family(SVMP_expression_sample)
+SVMP_expression_species<-cbind(SVMP_expression_species,rep('SVMP',nrow(SVMP_expression_species)))
+names(SVMP_expression_species)[names(SVMP_expression_species) == "rep(\"SVMP\", nrow(SVMP_expression_species))"] <- "Toxin_Family"
+SVMP_expression_species<-as.data.frame(SVMP_expression_species)
+
+SVSP_expression_sample<-Summarize_expression_by_family_expression(RSEM_summary,'SVSP')
+SVSP_expression_species<-format_species_expression_family(SVSP_expression_sample)
+SVSP_expression_species<-cbind(SVSP_expression_species,rep('SVSP',nrow(SVSP_expression_species)))
+names(SVSP_expression_species)[names(SVSP_expression_species) == "rep(\"SVSP\", nrow(SVSP_expression_species))"] <- "Toxin_Family"
+SVSP_expression_species<-as.data.frame(SVSP_expression_species)
+
+```
+
+
+We now need to combine our dataframes. But first we need to reorder RSEM_species_evenness
+``````{r reorder RSEM_species_evenness, include=FALSE}
+species_idx = match(Kmer_diversity_table[,1],RSEM_species_evenness[,1])
+RSEM_species_evenness_reordered<-RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(Kmer_diversity_table[,1],Species_sample_numbers[,1])
+Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+
+species_idx_3 = match(Kmer_diversity_table[,1],RSEM_family_species_diversity[,1])
+RSEM_family_species_diversity_reordered<-RSEM_family_species_diversity[species_idx_3,]
+
+species_idx_4 = match(Kmer_diversity_table[,1],PLA2_expression_species[,1])
+PLA2_expression_species_reordered<-PLA2_expression_species[species_idx_4,]
+
+species_idx_5 = match(Kmer_diversity_table[,1],SVMP_expression_species[,1])
+SVMP_expression_species_reordered<-SVMP_expression_species[species_idx_5,]
+
+species_idx_6 = match(Kmer_diversity_table[,1],CTL_expression_species[,1])
+CTL_expression_species_reordered<-CTL_expression_species[species_idx_6,]
+
+species_idx_7 = match(Kmer_diversity_table[,1],SVSP_expression_species[,1])
+SVSP_expression_species_reordered<-SVSP_expression_species[species_idx_7,]
+```
+
+test that all the first columns match
+``````{r test that all the first columns match, include=FALSE}
+all(Kmer_diversity_table[,1] == RSEM_species_evenness_reordered[,1])
+all(Kmer_diversity_table[,1] == Species_sample_numbers_reordered[,1])
+all(Kmer_diversity_table[,1] == Ave_clustered_Toxin_Counts[,1])
+all(RSEM_species_evenness_reordered[,1] == Species_sample_numbers_reordered[,1])
+all(RSEM_species_evenness_reordered[,1] == Species_sample_numbers_reordered[,1])
+all(Species_sample_numbers_reordered[,1] == Ave_clustered_Toxin_Counts[,1])
+all(RSEM_family_species_diversity_reordered[,1] == RSEM_species_evenness_reordered[,1])
+all(Kmer_diversity_table[,1] == PLA2_expression_species_reordered[,1])
+all(Kmer_diversity_table[,1] == SVMP_expression_species_reordered[,1])
+all(Kmer_diversity_table[,1] == CTL_expression_species_reordered[,1])
+all(Kmer_diversity_table[,1] == SVSP_expression_species_reordered[,1])
+```
+
+
+Now combine into one datatable and set rownames as lineages
+```{r combine into one datatable, include=FALSE}
+Venom_data<-cbind(Species_sample_numbers_reordered[,1:2],Ave_clustered_Toxin_Counts$ave_toxins,Kmer_diversity_table$Ave_H,RSEM_species_evenness_reordered$Ave_TPM_H,RSEM_family_species_diversity_reordered$Ave_TPM_H,RSEM_family_species_diversity_reordered$Ave_Families_count,PLA2_expression_species_reordered$Ave_Tox_count,PLA2_expression_species_reordered$Ave_mean_clrTPM,SVMP_expression_species_reordered$Ave_Tox_count,SVMP_expression_species_reordered$Ave_mean_clrTPM,CTL_expression_species_reordered$Ave_Tox_count,CTL_expression_species_reordered$Ave_mean_clrTPM,SVSP_expression_species_reordered$Ave_Tox_count,SVSP_expression_species_reordered$Ave_mean_clrTPM)
+colnames(Venom_data) =c('Species','Sample_number','GC','SD','ED','Family_ED','TFC','PLA2_num','PLA2_mean','SVMP_num','SVMP_mean','CTL_num','CTL_mean','SVSP_num','SVSP_mean')
+row.names(Venom_data) = Venom_data[,1]
+```
+
+
+
+Import tree data
+```{r Import tree data, include=FALSE}
+AstralTree<-read.newick('~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/0.1_Trees/final_astral.tre')
+  
+```
+
+
+plot trees
+```{r plot trees, include=FALSE}
+extraneous_tips<-c("Bothrops_asper","Trimeresurus_purpureomaculatus","Azemiops_feae","Echis_pyramidum",
+                   "Micrurus_fulvius","Thamnophis_conanti")
+
+AstralTree<-drop.tip(AstralTree,extraneous_tips)
+
+AstralTree$tip.label[29]="Crotalus_durissus_collilineatus"
+plot(AstralTree,cex=0.40)
+
+```
+
+Remove some rows in the venom data that are not included in our tree (individuals labelled as hybrids)
+````{r drop hybrids, include=FALSE}
+
+Venom_data<-Venom_data[-c(3),]
+
+Venom_data<-Venom_data[-c(7),]
+
+Venom_data<-Venom_data[-c(33),]
+all(rownames(Venom_data) %in% AstralTree$tip.label)
+
+```
+
+
+Import diet data
+```{r Import diet data}
+MPD <- read.delim("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/TaxData_WithPyrrhus.txt")
+rownames(MPD)<-MPD$Species
+```
+
+
+Check for rows in MPD and Venom data
+```{r Check for rows in MPD and Venom data}
+
+MPD_species =  match(MPD$Species,Venom_data$Species)
+
+MPD_Venom_data<-Venom_data[MPD_species,]
+
+MPD_Venom_data<-cbind(MPD_Venom_data,MPD$mpd.obs.z)
+if (colnames(MPD_Venom_data)[16] == "MPD$mpd.obs.z"){colnames(MPD_Venom_data)[16] = c("DB")}
+
+```
+
+
+
+
+
+
+
+# Initial Data Assessment
+Now we will do some initial assessments of models using traditional comparative approaches
+
+Test for phylogenetic signal within/among venom variables
+```{r Test for phylogenetic signa}
+library(phytools)
+
+GC_sig_lambda<-phylosig(AstralTree, setNames(Venom_data$GC, rownames(Venom_data)), method="lambda",test=TRUE)
+ED_sig_lambda<-phylosig(AstralTree, setNames(Venom_data$ED, rownames(Venom_data)), method="lambda",test=TRUE)
+SD_sig_lambda<-phylosig(AstralTree, setNames(Venom_data$SD, rownames(Venom_data)), method="lambda",test=TRUE)
+GC_sig_K<-phylosig(AstralTree, setNames(Venom_data$GC, rownames(Venom_data)), method="K",test=TRUE)
+ED_sig_K<-phylosig(AstralTree, setNames(Venom_data$ED, rownames(Venom_data)), method="K",test=TRUE)
+SD_sig_K<-phylosig(AstralTree, setNames(Venom_data$SD, rownames(Venom_data)), method="K",test=TRUE)
+
+
+GC_sig_lambda
+ED_sig_lambda
+SD_sig_lambda
+GC_sig_K
+ED_sig_K
+SD_sig_K
+```
+
+
+
+Make violin plots of Family comparisons
+```{r}
+library(cowplot)
+library(car)
+library(tidytests)
+
+Total_Four_families_Expression_data<-rbind(CTL_expression_species_reordered,PLA2_expression_species_reordered,SVMP_expression_species_reordered,SVSP_expression_species_reordered)
+Total_Four_families_Expression_data<-cbind(Total_Four_families_Expression_data,row.names(Total_Four_families_Expression_data))
+names(Total_Four_families_Expression_data)[13] <- "obs"
+
+Total_Four_families_Expression_data[23,]<-c('Crotalus_durissus_collilineatus',0,NA,NA,NA,NA,-1.89,NA,NA,NA,NA,'CTL',NA)
+Total_Four_families_Expression_data[24,]<-c('Crotalus_durissus_terrificus',0,NA,NA,NA,NA,-1.73,NA,NA,NA,NA,'CTL',NA)
+
+## There are many columns in this dataset that will not be useful to us (e.g. estimates of variance), so we will remove them
+Four_families_Expression_data<-as.data.frame(cbind(as.character(Total_Four_families_Expression_data$i),Total_Four_families_Expression_data$Ave_Tox_count,Total_Four_families_Expression_data$Ave_mean_clrTPM,as.character(Total_Four_families_Expression_data$Toxin_Family)))
+colnames(Four_families_Expression_data)<-c("i","Ave_Tox_count","Ave_mean_clrTPM","Toxin_Family")
+
+Four_families_Expression_data$Toxin_Family<-as.factor(Four_families_Expression_data$Toxin_Family)
+Four_families_Expression_data$Ave_mean_clrTPM<-as.numeric(as.character(Four_families_Expression_data$Ave_mean_clrTPM))
+Four_families_Expression_data$Ave_Tox_count<-as.numeric(as.character(Four_families_Expression_data$Ave_Tox_count))
+Four_families_Expression_data$i<-as.factor(Four_families_Expression_data$i)
+
+
+## Drop some rows that shouldn't be included in the whole dataset
+Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Agkistrodon_piscivorus_hybrid')
+Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Agkistrodon_contortrix_hybrid')
+Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Crotalus_molossus_hybrid')
+## Exclude C. durissus CTL rows which are substantial outliers
+Four_families_Expression_data<-subset(Four_families_Expression_data,!(Four_families_Expression_data$Toxin_Family =='CTL' & Four_families_Expression_data$i=='Crotalus_durissus_collilineatus'))
+Four_families_Expression_data<-subset(Four_families_Expression_data,!(Four_families_Expression_data$Toxin_Family =='CTL' & Four_families_Expression_data$i=='Crotalus_durissus_terrificus'))
+
+
+##rownames(Four_families_Expression_data)<-Four_families_Expression_data$i
+
+Anova(lm(Four_families_Expression_data$Ave_mean_clrTPM~Four_families_Expression_data$i+Four_families_Expression_data$Toxin_Family))
+
+
+pwc <- Four_families_Expression_data %>%
+  pairwise_t_test(Ave_mean_clrTPM, Toxin_Family,
+    p.adjust.method = "bonferroni")
+pwc
+
+
+p1 <- ggplot(Four_families_Expression_data, aes(x=Toxin_Family, y=Ave_mean_clrTPM, fill=Toxin_Family)) + 
+  geom_violin() + geom_boxplot(width=0.1)+ theme_cowplot()+
+  scale_fill_manual(values=c("yellow1", "red1", "dodgerblue3","chartreuse3"))
+p1
+
+
+########################################################################################################
+
+
+Anova(lm(Four_families_Expression_data$Ave_Tox_count~Four_families_Expression_data$i+Four_families_Expression_data$Toxin_Family))
+
+
+pwc <- Four_families_Expression_data %>%
+  pairwise_t_test(
+    Ave_Tox_count, Toxin_Family,
+    p.adjust.method = "bonferroni"
+    )
+pwc
+
+p2 <- ggplot(Four_families_Expression_data, aes(x=Toxin_Family, y=Ave_Tox_count, fill=Toxin_Family)) + 
+  geom_violin() + geom_boxplot(width=0.1)+ theme_cowplot()+
+  scale_fill_manual(values=c("yellow1", "red1", "dodgerblue3","chartreuse3"))
+p2
+
+
+```
+
+
+
+
+# Test models using the venom and diet data 
+This section is the meat of the analysis-- building and testing the phylgenetic path models. First we define the model sets and plot them to verify they are correct.
+
+Here is how we will define model variables
+GC = Gene content (# Transcripts)
+SD = Sequence Diversity (Probably frequency of AA k-mers among single transcripts)
+ED = Expression (diversity)
+DB = Diet breadth
+```{r Define diet model set}
+library(phylopath)
+
+models <- define_model_set(
+  Model1 = c(DB ~ SD),
+  Model2 = c(DB ~ ED),
+  Model3 = c(DB~SD+ED),
+  Model4 = c(DB~SD,ED~SD),
+  Model5 = c(DB~ED,ED~SD),
+  Model6 = c(DB~SD,SD~ED),
+  Model7 = c(DB~ED,SD~ED),
+  Model8 = c(DB~SD+ED,ED~SD),
+  Model9 = c(DB~SD+ED,SD~ED),
+  Null = c(),
+  .common = c(SD~GC,ED~GC)
+)
+
+
+plot_model_set(models, algorithm = 'lgl')
+
+```
+
+
+
+And run the models and check out the result:
+```{r run diet models with phylopath}
+library(patchwork)
+
+diet_result_lam <- phylo_path(models, data = MPD_Venom_data, tree = AstralTree, model = 'lambda')
+diet_result_lam
+(diet_s_lam <- summary(diet_result_lam))
+diet_best_model_lam <- best(diet_result_lam)
+diet_average_model_lam <- average(diet_result_lam,avg_method = "conditional")
+
+diet_model1<-choice(diet_result_lam,"Model1")
+
+p1<-plot(diet_s_lam)
+p2<-plot(diet_best_model_lam, curvature = 0.05)
+p3<-plot(diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p4<-coef_plot(diet_best_model_lam,error_bar = 'ci')
+p5<-coef_plot(diet_average_model_lam,error_bar = 'se')
+p6<-plot(diet_model1, curvature = 0.05)
+p7<-coef_plot(diet_model1)
+
+
+p1
+p2
+p3
+(p2 | p4) /
+(p6 | p7) /
+(p3 | p5)
+
+```
+
+
+Okay, so we have a full model and a hypothesis for how venom complexity evolves. Note, that model is highly driven by the strength of the correlation between gene content and SD and EE.
+
+
+#Examine the same set of models for each gene family
+Now we should look at how that hypothesis does or does not change within the four major toxin families
+```{r Build CTL, PLA2, SVMP, and SVSP specfic dataframes}
+CTL_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.1_CTL_kmers_clustered.txt", quote="\"", comment.char="")
+colnames(CTL_kmers) = c('Sample','Species','kmer','count')
+
+PLA2_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.2_PLA2_kmers_clustered.txt", quote="\"", comment.char="")
+colnames(PLA2_kmers) = c('Sample','Species','kmer','count')
+
+SVMP_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.3_SVMP_kmers_clustered.txt", quote="\"", comment.char="")
+colnames(SVMP_kmers) = c('Sample','Species','kmer','count')
+
+SVSP_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.4_SVSP_kmers_clustered.txt", quote="\"", comment.char="")
+colnames(SVSP_kmers) = c('Sample','Species','kmer','count')
+
+
+CTL_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.1.1_Final_indiv_CTLcount_clustered_lineages.csv")
+PLA2_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.2.1_Final_indiv_PLA2count_clustered_lineages.csv")
+SVMP_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.3.1_Final_indiv_SVMPcount_clustered_lineages.csv")
+SVSP_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/8.4.1_Final_indiv_SVSPcount_clustered_lineages.csv")
+
+CTL_RSEM<-subset(RSEM_summary,RSEM_summary$Toxin_Class=='CTL')
+PLA2_RSEM<-subset(RSEM_summary,RSEM_summary$Toxin_Class=='PLA2')
+SVSP_RSEM<-subset(RSEM_summary,RSEM_summary$Toxin_Class=='SVSP')
+SVMP_RSEM<-subset(RSEM_summary,RSEM_summary$Toxin_Class=='SVMPI'| RSEM_summary$Toxin_Class=='SVMPII' | RSEM_summary$Toxin_Class=='SVMPIII')
+
+```
+
+
+Now process them with commands
+```{r Process family data with written functions}
+Ave_CTL_Counts<-Average_toxins_count(CTL_counts)
+Ave_PLA2_Counts<-Average_toxins_count(PLA2_counts)
+Ave_SVMP_Counts<-Average_toxins_count(SVMP_counts)
+Ave_SVSP_Counts<-Average_toxins_count(SVSP_counts)
+
+CTL_Kmer_diversity<-Summarize_kmer_diversity(CTL_kmers)
+CTL_Kmer_diversity_table<-format_kmer_diversity_table(CTL_Kmer_diversity)
+PLA2_Kmer_diversity<-Summarize_kmer_diversity(PLA2_kmers)
+PLA2_Kmer_diversity_table<-format_kmer_diversity_table(PLA2_Kmer_diversity)
+SVMP_Kmer_diversity<-Summarize_kmer_diversity(SVMP_kmers)
+SVMP_Kmer_diversity_table<-format_kmer_diversity_table(SVMP_Kmer_diversity)
+SVSP_Kmer_diversity<-Summarize_kmer_diversity(SVSP_kmers)
+SVSP_Kmer_diversity_table<-format_kmer_diversity_table(SVSP_Kmer_diversity)
+
+CTL_RSEM_sample_evenness<-format_expression_evenness(CTL_RSEM)
+CTL_RSEM_species_evenness<-format_species_expression_evenness(CTL_RSEM_sample_evenness)
+PLA2_RSEM_sample_evenness<-format_expression_evenness(PLA2_RSEM)
+PLA2_RSEM_species_evenness<-format_species_expression_evenness(PLA2_RSEM_sample_evenness)
+SVMP_RSEM_sample_evenness<-format_expression_evenness(SVMP_RSEM)
+SVMP_RSEM_species_evenness<-format_species_expression_evenness(SVMP_RSEM_sample_evenness)
+SVSP_RSEM_sample_evenness<-format_expression_evenness(SVSP_RSEM)
+SVSP_RSEM_species_evenness<-format_species_expression_evenness(SVSP_RSEM_sample_evenness)
+
+
+## Format all these as datatables
+Species_sample_numbers<-as.data.frame(Species_sample_numbers)
+
+Ave_CTL_Counts<-as.data.frame(Ave_CTL_Counts)
+CTL_Kmer_diversity_table<-as.data.frame(CTL_Kmer_diversity_table)
+CTL_RSEM_species_evenness<-as.data.frame(CTL_RSEM_species_evenness)
+
+Ave_PLA2_Counts<-as.data.frame(Ave_PLA2_Counts)
+PLA2_Kmer_diversity_table<-as.data.frame(PLA2_Kmer_diversity_table)
+PLA2_RSEM_species_evenness<-as.data.frame(PLA2_RSEM_species_evenness)
+
+Ave_SVMP_Counts<-as.data.frame(Ave_SVMP_Counts)
+SVMP_Kmer_diversity_table<-as.data.frame(SVMP_Kmer_diversity_table)
+SVMP_RSEM_species_evenness<-as.data.frame(SVMP_RSEM_species_evenness)
+
+Ave_SVSP_Counts<-as.data.frame(Ave_SVSP_Counts)
+SVSP_Kmer_diversity_table<-as.data.frame(SVSP_Kmer_diversity_table)
+SVSP_RSEM_species_evenness<-as.data.frame(SVSP_RSEM_species_evenness)
+
+```
+
+
+
+We now need to combine our dataframes. But first we need to reorder RSEM_species_evenness
+```{r reorder RSEM_species_evenness for each family}
+species_idx = match(CTL_Kmer_diversity_table[,1],CTL_RSEM_species_evenness[,1])
+CTL_RSEM_species_evenness_reordered<-CTL_RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(CTL_Kmer_diversity_table[,1],Species_sample_numbers[,1])
+CTL_Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+
+
+species_idx = match(PLA2_Kmer_diversity_table[,1],PLA2_RSEM_species_evenness[,1])
+PLA2_RSEM_species_evenness_reordered<-PLA2_RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(PLA2_Kmer_diversity_table[,1],Species_sample_numbers[,1])
+PLA2_Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+
+
+species_idx = match(SVMP_Kmer_diversity_table[,1],SVMP_RSEM_species_evenness[,1])
+SVMP_RSEM_species_evenness_reordered<-SVMP_RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(SVMP_Kmer_diversity_table[,1],Species_sample_numbers[,1])
+SVMP_Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+
+
+species_idx = match(SVSP_Kmer_diversity_table[,1],SVSP_RSEM_species_evenness[,1])
+SVSP_RSEM_species_evenness_reordered<-SVSP_RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(SVSP_Kmer_diversity_table[,1],Species_sample_numbers[,1])
+SVSP_Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+```
+
+
+test that all the first columns match
+```{r test that all the first columns match}
+all(CTL_Kmer_diversity_table[,1] == CTL_RSEM_species_evenness_reordered[,1])
+all(CTL_Kmer_diversity_table[,1] == CTL_Species_sample_numbers_reordered[,1])
+all(CTL_Kmer_diversity_table[,1] == Ave_CTL_Counts[,1])
+all(CTL_RSEM_species_evenness_reordered[,1] == CTL_Species_sample_numbers_reordered[,1])
+all(CTL_Species_sample_numbers_reordered[,1] == Ave_CTL_Counts[,1])
+
+all(PLA2_Kmer_diversity_table[,1] == PLA2_RSEM_species_evenness_reordered[,1])
+all(PLA2_Kmer_diversity_table[,1] == PLA2_Species_sample_numbers_reordered[,1])
+all(PLA2_Kmer_diversity_table[,1] == Ave_PLA2_Counts[,1])
+all(PLA2_RSEM_species_evenness_reordered[,1] == PLA2_Species_sample_numbers_reordered[,1])
+all(PLA2_Species_sample_numbers_reordered[,1] == Ave_PLA2_Counts[,1])
+
+all(SVMP_Kmer_diversity_table[,1] == SVMP_RSEM_species_evenness_reordered[,1])
+all(SVMP_Kmer_diversity_table[,1] == SVMP_Species_sample_numbers_reordered[,1])
+all(SVMP_Kmer_diversity_table[,1] == Ave_SVMP_Counts[,1])
+all(SVMP_RSEM_species_evenness_reordered[,1] == SVMP_Species_sample_numbers_reordered[,1])
+all(SVMP_Species_sample_numbers_reordered[,1] == Ave_SVMP_Counts[,1])
+
+all(SVSP_Kmer_diversity_table[,1] == SVSP_RSEM_species_evenness_reordered[,1])
+all(SVSP_Kmer_diversity_table[,1] == SVSP_Species_sample_numbers_reordered[,1])
+all(SVSP_Kmer_diversity_table[,1] == Ave_SVSP_Counts[,1])
+all(SVSP_RSEM_species_evenness_reordered[,1] == SVSP_Species_sample_numbers_reordered[,1])
+all(SVSP_Species_sample_numbers_reordered[,1] == Ave_SVSP_Counts[,1])
+```
+
+
+Now combine into one datatable and set rownames as lineages
+```{r combine into datatables and set rownames as lineages}
+CTL_data<-cbind(CTL_Species_sample_numbers_reordered[,1:2],Ave_CTL_Counts[,2],CTL_Kmer_diversity_table[2],CTL_RSEM_species_evenness_reordered$Ave_TPM_H)
+colnames(CTL_data) =c('Species','Sample_number','GC','SD','ED')
+row.names(CTL_data) = CTL_data[,1]
+
+PLA2_data<-cbind(Species_sample_numbers_reordered[,1:2],Ave_PLA2_Counts[,2],PLA2_Kmer_diversity_table[2],PLA2_RSEM_species_evenness_reordered$Ave_TPM_H)
+colnames(PLA2_data) =c('Species','Sample_number','GC','SD','ED')
+row.names(PLA2_data) = PLA2_data[,1]
+
+SVMP_data<-cbind(Species_sample_numbers_reordered[,1:2],Ave_SVMP_Counts[,2],SVMP_Kmer_diversity_table[2],SVMP_RSEM_species_evenness_reordered$Ave_TPM_H)
+colnames(SVMP_data) =c('Species','Sample_number','GC','SD','ED')
+row.names(SVMP_data) = SVMP_data[,1]
+
+SVSP_data<-cbind(Species_sample_numbers_reordered[,1:2],Ave_SVSP_Counts[,2],SVSP_Kmer_diversity_table[2],SVSP_RSEM_species_evenness_reordered$Ave_TPM_H)
+colnames(SVSP_data) =c('Species','Sample_number','GC','SD','ED')
+row.names(SVSP_data) = SVSP_data[,1]
+
+```
+
+
+
+Remove a few rows not in the astral tree
+```{r Remove rows not in astral tree}
+CTL_data<-CTL_data[-c(3),]
+CTL_data<-CTL_data[-c(7),]
+CTL_data<-CTL_data[-c(33),]
+all(rownames(CTL_data) %in% AstralTree$tip.label)
+
+PLA2_data<-PLA2_data[-c(3),]
+PLA2_data<-PLA2_data[-c(7),]
+PLA2_data<-PLA2_data[-c(33),]
+all(rownames(PLA2_data) %in% AstralTree$tip.label)
+
+SVMP_data<-SVMP_data[-c(3),]
+SVMP_data<-SVMP_data[-c(7),]
+SVMP_data<-SVMP_data[-c(33),]
+all(rownames(SVMP_data) %in% AstralTree$tip.label)
+
+SVSP_data<-SVSP_data[-c(3),]
+SVSP_data<-SVSP_data[-c(7),]
+SVSP_data<-SVSP_data[-c(33),]
+all(rownames(SVSP_data) %in% AstralTree$tip.label)
+
+```
+
+
+
+
+Check for rows in MPD and Venom data
+```{r check rows in MPD and Venom datta}
+
+CTL_MPD_species =  match(MPD$Species,CTL_data$Species)
+MPD_CTL_data<-CTL_data[MPD_species,]
+MPD_CTL_data<-cbind(MPD_CTL_data,MPD$mpd.obs.z)
+MPD_CTL_data<-MPD_CTL_data[-c(26),]
+MPD_CTL_data<-MPD_CTL_data[-c(27),]
+if (colnames(MPD_CTL_data)[6] == "MPD$mpd.obs.z"){colnames(MPD_CTL_data)[6] = c("DB")}
+
+PLA2_MPD_species =  match(MPD$Species,PLA2_data$Species)
+MPD_PLA2_data<-PLA2_data[MPD_species,]
+MPD_PLA2_data<-cbind(MPD_PLA2_data,MPD$mpd.obs.z)
+if (colnames(MPD_PLA2_data)[6] == "MPD$mpd.obs.z"){colnames(MPD_PLA2_data)[6] = c("DB")}
+
+SVMP_MPD_species =  match(MPD$Species,SVMP_data$Species)
+MPD_SVMP_data<-SVMP_data[MPD_species,]
+MPD_SVMP_data<-cbind(MPD_SVMP_data,MPD$mpd.obs.z)
+if (colnames(MPD_SVMP_data)[6] == "MPD$mpd.obs.z"){colnames(MPD_SVMP_data)[6] = c("DB")}
+
+SVSP_MPD_species =  match(MPD$Species,SVSP_data$Species)
+MPD_SVSP_data<-SVSP_data[MPD_species,]
+MPD_SVSP_data<-cbind(MPD_SVSP_data,MPD$mpd.obs.z)
+if (colnames(MPD_SVSP_data)[6] == "MPD$mpd.obs.z"){colnames(MPD_SVSP_data)[6] = c("DB")}
+
+```
+
+
+
+And run the models and check out the result:
+```{r run the models and check out the result}
+library(patchwork)
+
+CTL_diet_result_lam <- phylo_path(models, data = MPD_CTL_data, tree = AstralTree, model = 'lambda')
+CTL_diet_result_lam
+(CTL_diet_s_lam <- summary(CTL_diet_result_lam))
+(CTL_diet_best_model_lam <- best(CTL_diet_result_lam))
+CTL_diet_average_model_lam <- average(CTL_diet_result_lam,avg_method = "conditional")
+
+p1<-plot(CTL_diet_s_lam)
+p2<-plot(CTL_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p3<-plot(CTL_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p4<-coef_plot(CTL_diet_best_model_lam,error_bar = 'ci')
+p5<-coef_plot(CTL_diet_average_model_lam,error_bar = 'ci')
+
+
+PLA2_diet_result_lam <- phylo_path(models, data = MPD_PLA2_data, tree = AstralTree, model = 'lambda')
+PLA2_diet_result_lam
+(PLA2_diet_s_lam <- summary(PLA2_diet_result_lam))
+(PLA2_diet_best_model_lam <- best(PLA2_diet_result_lam))
+PLA2_diet_average_model_lam <- average(PLA2_diet_result_lam,avg_method = "conditional")
+
+p6<-plot(PLA2_diet_s_lam)
+p7<-plot(PLA2_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p8<-plot(PLA2_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p9<-coef_plot(PLA2_diet_best_model_lam,error_bar = 'ci')
+p10<-coef_plot(PLA2_diet_average_model_lam,error_bar = 'ci')
+
+
+SVMP_diet_result_lam <- phylo_path(models, data = MPD_SVMP_data, tree = AstralTree, model = 'lambda')
+SVMP_diet_result_lam
+(SVMP_diet_s_lam <- summary(SVMP_diet_result_lam))
+(SVMP_diet_best_model_lam <- best(SVMP_diet_result_lam))
+SVMP_diet_average_model_lam <- average(SVMP_diet_result_lam,avg_method = "conditional")
+
+p11<-plot(SVMP_diet_s_lam)
+p12<-plot(SVMP_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p13<-plot(SVMP_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p14<-coef_plot(SVMP_diet_best_model_lam,error_bar = 'ci')
+p15<-coef_plot(SVMP_diet_average_model_lam,error_bar = 'ci')
+
+
+SVSP_diet_result_lam <- phylo_path(models, data = MPD_SVSP_data, tree = AstralTree, model = 'lambda')
+SVSP_diet_result_lam
+(SVSP_diet_s_lam <- summary(SVSP_diet_result_lam))
+(SVSP_diet_best_model_lam <- best(SVSP_diet_result_lam))
+#(SVSP_diet_best_model_lam2 <- choice(SVSP_diet_result_lam,"Model11"))
+SVSP_diet_average_model_lam <- average(SVSP_diet_result_lam,avg_method = "conditional")
+
+p16<-plot(SVSP_diet_s_lam)
+p17<-plot(SVSP_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p18<-plot(SVSP_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p19<-coef_plot(SVSP_diet_best_model_lam,error_bar = 'ci')
+p20<-coef_plot(SVSP_diet_average_model_lam,error_bar = 'ci')
+
+(p1 | p6 | p11 | p16) /
+(p2 | p7 | p12 | p17) /
+(p3 | p8 | p13 | p18) /
+(p4 | p9 | p14 | p19) /
+(p5 | p10 | p15 | p20)
+
+
+png("families_check.png", width=1080, height=1080)
+(p1 | p6 | p11 | p16) /
+(p2 | p7 | p12 | p17) /
+(p3 | p8 | p13 | p18) /
+(p4 | p9 | p14 | p19) /
+(p5 | p10 | p15 | p20)
+dev.off()
+```
+
+
+
+
+
+Test to ensure that these same overall path model applies if it is reduced to just the four main families
+```{r}
+four_families_kmers<-rbind(CTL_kmers,PLA2_kmers,SVMP_kmers,SVSP_kmers)
+four_families_RSEM<-rbind(CTL_RSEM,PLA2_RSEM,SVMP_RSEM,SVSP_RSEM)
+four_families_ct_tmp<-cbind(CTL_counts,PLA2_counts[,3],SVMP_counts[,3],SVSP_counts[,3])
+
+Toxin_count<-c()
+for (i in 1:nrow(four_families_ct_tmp)){
+  tox_num<-sum(four_families_ct_tmp[i,3:6])
+  Toxin_count<-c(Toxin_count,tox_num)
+}
+
+four_families_Counts<-cbind(four_families_ct_tmp[,1:2],Toxin_count)
+
+
+
+Ave_four_families_Counts<-Average_toxins_count(four_families_Counts)
+
+four_families_Kmer_diversity<-Summarize_kmer_diversity(four_families_kmers)
+four_families_Kmer_diversity_table<-format_kmer_diversity_table(four_families_Kmer_diversity)
+
+four_families_RSEM_sample_evenness<-format_expression_evenness(four_families_RSEM)
+four_families_RSEM_species_evenness<-format_species_expression_evenness(four_families_RSEM_sample_evenness)
+
+four_families_RSEM_family_sample_diversity<-Summarize_venom_diversity_by_family_expression(four_families_RSEM)
+four_families_RSEM_family_species_diversity<-format_species_expression_evenness_family(four_families_RSEM_family_sample_diversity)
+
+## Format all these as datatables
+Species_sample_numbers<-as.data.frame(Species_sample_numbers)
+
+Ave_four_families_Counts<-as.data.frame(Ave_four_families_Counts)
+four_families_Kmer_diversity_table<-as.data.frame(four_families_Kmer_diversity_table)
+four_families_RSEM_species_evenness<-as.data.frame(four_families_RSEM_species_evenness)
+four_families_RSEM_family_species_diversity<-as.data.frame(four_families_RSEM_family_species_diversity)
+
+
+
+
+species_idx = match(four_families_Kmer_diversity_table[,1],four_families_RSEM_species_evenness[,1])
+four_families_RSEM_species_evenness_reordered<-four_families_RSEM_species_evenness[species_idx,]
+
+species_idx_2 =  match(four_families_Kmer_diversity_table[,1],Species_sample_numbers[,1])
+four_families_Species_sample_numbers_reordered<-Species_sample_numbers[species_idx_2,]
+
+species_idx_3 =  match(four_families_Kmer_diversity_table[,1],four_families_RSEM_family_species_diversity[,1])
+four_families_RSEM_family_species_diversity_reordered<-four_families_RSEM_family_species_diversity[species_idx_2,]
+
+
+
+
+all(four_families_Kmer_diversity_table[,1] == four_families_RSEM_species_evenness_reordered[,1])
+all(four_families_Kmer_diversity_table[,1] == four_families_Species_sample_numbers_reordered[,1])
+all(four_families_Kmer_diversity_table[,1] == Ave_four_families_Counts[,1])
+all(four_families_RSEM_species_evenness_reordered[,1] == four_families_Species_sample_numbers_reordered[,1])
+all(four_families_Species_sample_numbers_reordered[,1] == Ave_four_families_Counts[,1])
+
+
+
+four_families_data<-cbind(four_families_Species_sample_numbers_reordered[,1:2],Ave_four_families_Counts[,2],four_families_Kmer_diversity_table[2],four_families_RSEM_species_evenness_reordered$Ave_TPM_H,four_families_RSEM_family_species_diversity$Ave_TPM_H)
+colnames(four_families_data) =c('Species','Sample_number','GC','SD','ED','Family_Div')
+row.names(four_families_data) = four_families_data[,1]
+
+
+
+four_families_data<-four_families_data[-c(3),]
+four_families_data<-four_families_data[-c(7),]
+four_families_data<-four_families_data[-c(33),]
+all(rownames(four_families_data) %in% AstralTree$tip.label)
+
+
+
+four_families_MPD_species =  match(MPD$Species,four_families_data$Species)
+MPD_four_families_data<-four_families_data[MPD_species,]
+MPD_four_families_data<-cbind(MPD_four_families_data,MPD$mpd.obs.z)
+MPD_four_families_data<-MPD_four_families_data[-c(26),]
+MPD_four_families_data<-MPD_four_families_data[-c(27),]
+if (colnames(MPD_four_families_data)[7] == "MPD$mpd.obs.z"){colnames(MPD_four_families_data)[7] = c("DB")}
+
+
+
+
+
+library(patchwork)
+
+four_families_diet_result_lam <- phylo_path(models, data = MPD_four_families_data, tree = AstralTree, model = 'lambda')
+four_families_diet_result_lam
+(four_families_diet_s_lam <- summary(four_families_diet_result_lam))
+(four_families_diet_best_model_lam <- best(four_families_diet_result_lam))
+four_families_diet_average_model_lam <- average(four_families_diet_result_lam,avg_method = "conditional")
+
+p1<-plot(four_families_diet_s_lam)
+p2<-plot(four_families_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p3<-plot(four_families_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
+p4<-coef_plot(four_families_diet_best_model_lam,error_bar = 'ci')
+p5<-coef_plot(four_families_diet_average_model_lam,error_bar = 'ci')
+
+
+
+setwd('~/Desktop')
+png("four_families.png", width=1080, height=1080)
+(p1 ) /
+(p2 ) /
+(p3 ) /
+(p4 ) /
+(p5 )
+dev.off()
+
+```
+
+
+
+
+Test for relationships between diet and absolute expression of the various families
+```{r test of diet specialization ~ GC, ED, and SD}
+library(phylolm)
+library(rr2)
+
+pruned.tree<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_data), AstralTree$tip.label)])
+
+## Check on PLA2 and SVMP
+DB_v_PLA2_mean<-phylolm(DB~PLA2_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
+summary(DB_v_PLA2_mean)
+R2(DB_v_PLA2_mean,phy=pruned.tree)
+plot(MPD_Venom_data$DB~MPD_Venom_data$PLA2_mean,pch=21,bg='red1',cex=2)
+abline(a=DB_v_PLA2_mean$coefficients[[1]],b=DB_v_PLA2_mean$coefficients[[2]], lty=2, lwd=4)
+
+DB_v_SVMP_mean<-phylolm(DB~SVMP_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
+summary(DB_v_SVMP_mean)
+R2(DB_v_SVMP_mean,phy=pruned.tree)
+plot(MPD_Venom_data$DB~MPD_Venom_data$SVMP_mean,pch=21,bg='dodgerblue',cex=2)
+abline(a=DB_v_SVMP_mean$coefficients[[1]],b=DB_v_SVMP_mean$coefficients[[2]], lty=2, lwd=4)
+
+DB_v_SVSP_mean<-phylolm(DB~SVSP_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
+summary(DB_v_SVSP_mean)
+R2(DB_v_SVSP_mean,phy=pruned.tree)
+plot(MPD_Venom_data$DB~MPD_Venom_data$SVSP_mean,pch=21,bg='chartreuse3',cex=2)
+abline(a=DB_v_SVSP_mean$coefficients[[1]],b=DB_v_SVSP_mean$coefficients[[2]], lty=2, lwd=4)
+
+
+
+## Remove durissus to check it
+MPD_Venom_data_sansdurissus<-MPD_Venom_data[-c(10),]
+
+pruned.tree.one<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_data_sansdurissus), AstralTree$tip.label)])
+
+DB_v_PLA2_mean<-phylolm(DB~PLA2_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
+summary(DB_v_PLA2_mean)
+R2(DB_v_PLA2_mean,phy=pruned.tree.one)
+plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$PLA2_mean,pch=21,bg='red1',cex=2)
+abline(a=DB_v_PLA2_mean$coefficients[[1]],b=DB_v_PLA2_mean$coefficients[[2]], lty=2, lwd=4)
+
+DB_v_SVMP_mean<-phylolm(DB~SVMP_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
+summary(DB_v_SVMP_mean)
+R2(DB_v_SVMP_mean,phy=pruned.tree.one)
+plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$SVMP_mean,pch=21,bg='dodgerblue3',cex=2)
+abline(a=DB_v_SVMP_mean$coefficients[[1]],b=DB_v_SVMP_mean$coefficients[[2]], lty=2, lwd=4)
+
+
+DB_v_CTL_mean<-phylolm(DB~CTL_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
+summary(DB_v_CTL_mean)
+R2(DB_v_CTL_mean,phy=pruned.tree.one)
+plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$CTL_mean,pch=21,bg='yellow1',cex=2)
+abline(a=DB_v_CTL_mean$coefficients[[1]],b=DB_v_CTL_mean$coefficients[[2]], lty=2, lwd=4)
+
+DB_v_SVSP_mean<-phylolm(DB~SVSP_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
+summary(DB_v_SVSP_mean)
+R2(DB_v_SVSP_mean,phy=pruned.tree.one)
+plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$SVSP_mean,pch=21,bg='chartreuse3',cex=2)
+abline(a=DB_v_SVSP_mean$coefficients[[1]],b=DB_v_SVSP_mean$coefficients[[2]], lty=2, lwd=4)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# Toxin familiy MPD-based analyses
+Lets add some information about the relationship betweeen sequence data and expression withing venom gene families
+```{r SVMP assessment}
+library(ggplot2)
+library(hrbrthemes)
+library(cowplot)
+
+All_SVMPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/9.3_SVMP_alignments/X_All_SVMPs/muscle/All_SVMP_muscle_aln.faa.treefile_edited')
+
+
+SVMP_MPD_table<-Toxin_expression_MPD_TPM(SVMP_RSEM,All_SVMPs_iqtree)
+
+
+SVMP_MPD_summary<-as.data.frame(summarize_toxin_MPD_species(SVMP_MPD_table))
+row.names(SVMP_MPD_summary)=SVMP_MPD_summary[,1]
+
+
+MPD_not_in_data<-SVMP_MPD_summary[,1][!SVMP_MPD_summary[,1] %in% SVMP_data[,1]] 
+SVMP_MPD_summary<-SVMP_MPD_summary[!(row.names(SVMP_MPD_summary) %in% MPD_not_in_data), ]
+
+data_not_in_MPD<-row.names(SVMP_data)[!row.names(SVMP_data) %in% SVMP_MPD_summary[,1]] 
+SVMP_data_1<-SVMP_data[!(row.names(SVMP_data) %in% data_not_in_MPD), ]
+
+SVMP_species_idx_1 = match(SVMP_data_1[,1],SVMP_MPD_summary[,1])
+SVMP_MPD_summary<-SVMP_MPD_summary[SVMP_species_idx_1,]
+
+all(row.names(SVMP_MPD_summary) == row.names(SVMP_data_1))
+
+SVMP_MPD_final<-cbind(SVMP_data_1,SVMP_MPD_summary[,2:5])
+
+## Build density plots to look at difference between weighted and unweighted standardized MPD
+SVMP_ses_mpd_set<-c(SVMP_MPD_final$ses.mpd.z)
+SVMP_ses_mpd_set_categories<-c(rep("standard",length(SVMP_MPD_final[,1])))
+SVMP_densities<-as.data.frame(cbind(SVMP_ses_mpd_set,SVMP_ses_mpd_set_categories))
+SVMP_densities$SVMP_ses_mpd_set<-as.numeric(as.character(SVMP_densities$SVMP_ses_mpd_set))
+SVMP_densities_plot <- ggplot(data=SVMP_densities, aes(x=SVMP_ses_mpd_set)) +
+    geom_density(alpha=.4, fill="blue") +
+    scale_x_continuous(name="MPDsvmp", limits=c(-3, 1.5))+
+    theme_cowplot()
+SVMP_densities_plot
+
+
+## plot to see differences 
+ses_mpd_model<-lm(SVMP_MPD_final$weighted.ses.mpd.z~SVMP_MPD_final$ses.mpd.z)
+summary(ses_mpd_model)
+plot(SVMP_MPD_final$weighted.ses.mpd.z~SVMP_MPD_final$ses.mpd.z,bg='blue',pch=21,cex=1.3)
+abline(a=0,b=1,lwd=2)
+abline(ses_mpd_model,col='darkred',lwd=2)
+
+
+SVMP_pruned_tree<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(SVMP_MPD_final), AstralTree$tip.label)])
+SVMP_MPD_final$Species<-as.character(SVMP_MPD_final$Species)
+
+
+MPD_species_2 =  match(MPD$Species,SVMP_MPD_final$Species)
+
+SVMP_diet_MPD<-SVMP_MPD_final[MPD_species_2,]
+
+all(row.names(SVMP_diet_MPD) == row.names(MPD_species_2))
+colnames(SVMP_diet_MPD)<-c("Species","Sample_number","GC","SD","EE",
+                           "SVMP_mpd","SVMP_weighted_mpd","SVMP_ses.mpd.z",
+                           "SVMP_weighted.ses.mpd.z")
+
+
+SVMP_diet_MPD<-cbind(SVMP_diet_MPD,MPD$mpd.obs.z)
+if (colnames(SVMP_diet_MPD)[10] == "MPD$mpd.obs.z"){colnames(SVMP_diet_MPD)[10] = c("DB")}
+
+
+SVMP_pruned_tree_1<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(SVMP_diet_MPD), AstralTree$tip.label)])
+
+
+
+SVMP_DB_MGD<-phylolm(DB~SVMP_ses.mpd.z,data = SVMP_diet_MPD,phy = SVMP_pruned_tree_1,model=c('lambda'), full.matrix = TRUE)
+summary(SVMP_DB_MGD)
+R2(SVMP_DB_MGD,phy=SVMP_pruned_tree_1)
+ggplot(SVMP_diet_MPD,aes(SVMP_ses.mpd.z,DB))+geom_point(aes(size=1.5),colour='deepskyblue3')+
+  geom_abline(intercept=SVMP_DB_MGD$coefficients[1],slope=SVMP_DB_MGD$coefficients[2],size=2,linetype = "dashed")+ylim(-6,6)+
+  theme_cowplot()
+
+
+```
+
+
+
+```{r SVSP assessment}
+
+All_SVSPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/9.4_SVSP_alignments/X_All_SVSPs/muscle/All_SVSP_muscle_aln.faa.treefile')
+
+SVSP_MPD_table<-Toxin_expression_MPD_TPM(SVSP_RSEM,All_SVSPs_iqtree)
+
+
+SVSP_MPD_summary<-as.data.frame(summarize_toxin_MPD_species(SVSP_MPD_table))
+row.names(SVSP_MPD_summary)=SVSP_MPD_summary[,1]
+
+
+SVSP_MPD_not_in_data<-SVSP_MPD_summary[,1][!SVSP_MPD_summary[,1] %in% SVSP_data[,1]] 
+SVSP_MPD_summary<-SVSP_MPD_summary[!(row.names(SVSP_MPD_summary) %in% SVSP_MPD_not_in_data), ]
+
+SVSP_data_not_in_MPD<-row.names(SVSP_data)[!row.names(SVSP_data) %in% SVSP_MPD_summary[,1]] 
+SVSP_data_1<-SVSP_data[!(row.names(SVSP_data) %in% SVSP_data_not_in_MPD), ]
+
+SVSP_species_idx_1 = match(SVSP_data_1[,1],SVSP_MPD_summary[,1])
+SVSP_MPD_summary<-SVSP_MPD_summary[SVSP_species_idx_1,]
+
+all(row.names(SVSP_MPD_summary) == row.names(SVSP_data_1))
+
+SVSP_MPD_final<-cbind(SVSP_data_1,SVSP_MPD_summary[,2:5])
+
+
+## Build density plots to look at difference between weighted and unweighted standardized MPD
+SVSP_ses_mpd_set<-c(SVSP_MPD_final$ses.mpd.z)
+SVSP_ses_mpd_set_categories<-c(rep("standard",length(SVSP_MPD_final[,1])))
+SVSP_densities<-as.data.frame(cbind(SVSP_ses_mpd_set,SVSP_ses_mpd_set_categories))
+SVSP_densities$SVSP_ses_mpd_set<-as.numeric(as.character(SVSP_densities$SVSP_ses_mpd_set))
+SVSP_densities_plot <- ggplot(data=SVSP_densities, aes(x=SVSP_ses_mpd_set)) +
+    geom_density(alpha=.4,,fill="green") +
+    scale_x_continuous(name="MPDsvsp", limits=c(-3, 1.5))+
+    theme_cowplot()
+SVSP_densities_plot
+
+
+## plot to see differences 
+ses_mpd_model<-lm(SVSP_MPD_final$weighted.ses.mpd.z~SVSP_MPD_final$ses.mpd.z)
+summary(ses_mpd_model)
+plot(SVSP_MPD_final$weighted.ses.mpd.z~SVSP_MPD_final$ses.mpd.z,bg='green4',pch=21,cex=1.3)
+abline(a=0,b=1,lwd=2)
+abline(ses_mpd_model,col='darkred',lwd=2)
+
+
+SVSP_pruned_tree<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(SVSP_MPD_final), AstralTree$tip.label)])
+SVSP_MPD_final$Species<-as.character(SVSP_MPD_final$Species)
+
+
+
+MPD_species_2 =  match(MPD$Species,SVSP_MPD_final$Species)
+
+SVSP_diet_MPD<-SVSP_MPD_final[MPD_species_2,]
+
+all(row.names(SVSP_diet_MPD) == row.names(MPD_species_2))
+colnames(SVSP_diet_MPD)<-c("Species","Sample_number","GC","SD","EE",
+                           "SVSP_mpd","SVSP_weighted_mpd","SVSP_ses.mpd.z",
+                           "SVSP_weighted.ses.mpd.z")
+
+
+SVSP_diet_MPD<-cbind(SVSP_diet_MPD,MPD$mpd.obs.z)
+if (colnames(SVSP_diet_MPD)[10] == "MPD$mpd.obs.z"){colnames(SVSP_diet_MPD)[10] = c("DB")}
+
+SVSP_pruned_tree_1<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(SVSP_diet_MPD), AstralTree$tip.label)])
+
+
+SVSP_DB_MGD<-phylolm(DB~SVSP_ses.mpd.z,data = SVSP_diet_MPD,phy = SVSP_pruned_tree_1,model=c('lambda'), full.matrix = TRUE)
+summary(SVSP_DB_MGD)
+R2(SVSP_DB_MGD,phy=SVSP_pruned_tree_1)
+ggplot(SVSP_diet_MPD,aes(SVSP_ses.mpd.z,DB))+geom_point(aes(size=1.5),colour='green3')+
+  geom_abline(intercept=SVSP_DB_MGD$coefficients[1],slope=SVSP_DB_MGD$coefficients[2],size=2,linetype = "dashed")+ylim(-6,6)+
+  theme_cowplot()
+
+
+
+```
+
+
+
+
+
+```{r Figure for examining GC, EE, and SD across the tree}
+library(ggtree)
+
+venGC <- as.matrix(Venom_data)[,3]
+
+
+anc.GC<-anc.ML(AstralTree,setNames(Venom_data$GC, rownames(Venom_data)),model="OU")
+
+td <- data.frame(node = nodeid(AstralTree, names(venGC)),
+               trait = as.numeric(venGC))
+nd <- data.frame(node = as.numeric(names(anc.GC$ace)), trait = anc.GC$ace)
+
+d <- rbind(td, nd)
+
+tree <- full_join(AstralTree, d, by = 'node')
+
+
+new_labels<-str_replace_all(tree@phylo$tip.label, '_', '\ ')
+name_d <- data.frame(label = tree@phylo$tip.label, name = new_labels)
+
+bar_data<-data.frame(id=Venom_data$Species,ED=Venom_data$ED,SD=Venom_data$SD)
+
+p1 <- ggtree(tree, aes(color=trait), ladderize = FALSE, continuous = TRUE, size=1.5) %<+% name_d + scale_color_gradientn(colours=c('#DB9E11','#1DBCDB',"#1A7C8F", '#341A8F', '#3607DB')) + geom_tiplab(cex=2.5,aes(label=paste(name)),col='black')+
+  
+  geom_facet(panel = "ED", data = bar_data, geom = ggstance::geom_barh, 
+                aes(x = ED), 
+                stat = "identity", width = .5) + xlim_tree(37) +
+  geom_facet(panel = "SD", data = bar_data, geom = ggstance::geom_barh, 
+                aes(x = SD), 
+                stat = "identity", width = .5) + xlim_tree(37)
+  
+p1
+facet_widths(p1,c(3,1,1))
+
+
+
+p1<- ggtree(tree, aes(color=trait), ladderize = FALSE, continuous = TRUE, size=1.5) %<+% name_d + scale_color_gradientn(colours=c('#DB9E11','#1DBCDB',"#1A7C8F", '#341A8F', '#3607DB')) + geom_tiplab(cex=2.5,aes(label=paste(name)),col='black')
+
+p2 <- facet_plot(p1 + xlim_tree(40), panel = 'ED', data = bar_data, geom = ggstance::geom_barh, mapping = aes(x = ED),fill=c('#DB9E11'), 
+                 width = 0.6, stat='identity',colour=c('black'))
+p2<-facet_plot(p2+ xlim_tree(40), panel = 'SD', data = bar_data, geom = ggstance::geom_barh, mapping = aes(x = SD),fill=c('#1DBCDB'), 
+                 width = 0.6, stat='identity',colour=c('black'))
+
+p2
+
+```
+
