@@ -30,7 +30,7 @@ library( phylolm )
 	registerDoParallel( cores )
 
 
-setwd('~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis')
+setwd('~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes')
 
 ```
 
@@ -43,7 +43,8 @@ Average_per_species = function( toxin_counts_object, species ){
   ## subset toxin_counts_object to species
   tmp<-subset(toxin_counts_object,toxin_counts_object$Species == species)
   ave_toxins<-mean(tmp$Toxin_count)
-  ave_output<-tibble(species,ave_toxins)
+  toxins_sd<-sd(tmp$Toxin_count)
+  ave_output<-tibble(species,ave_toxins,toxins_sd)
   return(ave_output)
 }
 
@@ -119,7 +120,10 @@ calculate_clrTPM = function(RSEM,Sample){
   tmp<-subset(RSEM,RSEM$ID==Sample)
   gm = geoMean(tmp$TPM)
   clr=log((tmp$TPM / gm))
+  clr_min<-min(clr)
+  #rep_geo_mean<-rep(gm,length(clr))
   tmp<-cbind(tmp,clr)
+  #tmp<-cbind(tmp,clr,rep_geo_mean)
   return(tmp)
 }
 
@@ -156,7 +160,7 @@ summarize_toxin_expression = function(RSEM){
 }
 
 
-## Calculate expression diversiity
+## Calculate expression diversity
 calculate_expression_evenness = function(RSEM_summary,Sample){
   ### subset list by sample
   tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
@@ -265,7 +269,7 @@ Toxin_family_diversity = function(toxin_RSEM_summary){
 
 
 
-## Calculate expression evenness of familiess
+## Calculate expression evenness of families
 calculate_expression_evenness_family = function(RSEM_summary,Sample){
   ### subset list by sample
   tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
@@ -553,8 +557,10 @@ ses.mpd.mod=function (samp, dis, null.model = c("taxa.labels", "richness",
 ## Calculate expression evenness of familiess
 calculate_total_expression_family = function(RSEM_summary,tox_fam,Sample){
   ### subset list by sample
-  tmp<-subset(RSEM_summary,RSEM_summary$ID==Sample)
-  tmp<-subset(tmp,grepl(tox_fam,tmp$Transcript)==TRUE)
+  tmp_sample<-subset(RSEM_summary,RSEM_summary$ID==Sample)
+  tmp<-subset(tmp_sample,grepl(tox_fam,tmp_sample$Transcript)==TRUE)
+  
+  #if (nrow(tmp) > 0){
   Species<-unique(tmp$Species)
   
   Tox_numbers<-nrow(tmp)
@@ -570,8 +576,7 @@ calculate_total_expression_family = function(RSEM_summary,tox_fam,Sample){
   sum_perc<-sum(tmp$tox_perc)
   mean_perc<-mean(tmp$tox_perc)
   sd_perc<-sd(tmp$tox_perc)
-  
-  
+
   output<-tibble(Sample,Species,tox_fam,Tox_numbers,sum_TPM,mean_TPM,sd_TPM,sum_clrTPM,
                  mean_clrTPM,sd_clrTPM,sum_perc,mean_perc,sd_perc)
   return(output)
@@ -582,7 +587,7 @@ calculate_total_expression_family = function(RSEM_summary,tox_fam,Sample){
 ##Summarize_venom_diversity_by_family_expression
 Summarize_expression_by_family_expression = function(RSEM_summary,tox_fam){
   Family_table=data.frame(ID=factor(),Species=factor(), Toxin_family=factor(),Tox_count=numeric(),                            sum_TPM=numeric(),mean_TPM=numeric(),sd_TPM=numeric(),sum_clrTPM=numeric(),
-                      mean_clrTPM=numeric(),sd_clrTPM=numeric(), sum_perc=numeric(), mean_perc=numeric(), sd_perc=numeric())
+                      mean_clrTPM=numeric(),sd_clrTPM=numeric(), min_clrTPM=numeric(), sum_perc=numeric(), mean_perc=numeric(), sd_perc=numeric())
   
   for (id in unique(RSEM_summary$ID)){
     new_row<-calculate_total_expression_family(RSEM_summary,tox_fam,id)
@@ -626,30 +631,41 @@ format_species_expression_family = function(RSEM_family_sample_total){
 
 
 
-
 #Import and Format Data
 The first section of the code will deal with importing the data and computing the summary statistics
 
 Import Gene number data and expression data
 ```{r Import Gene number data and expression data, include=FALSE}
 ## rsem data
-RSEM<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/6.1_Final_RSEM_lineage.csv")
+RSEM<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/6.1_Final_RSEM_lineage.csv")
 ## Drop 0 values
 RSEM<-subset(RSEM,RSEM$TPM > 0)
 
-Toxin_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/5.3_Final_indiv_toxincount.csv")
-
-clustered_Toxin_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/5.4_Final_indiv_toxincount_clustered_lineages.csv")
+clustered_Toxin_counts<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/5.4_Final_indiv_toxincount_clustered_lineages.csv")
 clustered_Toxin_counts<-clustered_Toxin_counts[-c(73),]
 
-Toxin_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/7.1_toxin_kmers_clustered_lineage.txt", quote="\"", comment.char="")
+Toxin_kmers<-read.table("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/7.1_toxin_kmers_clustered_lineage.txt", quote="\"", comment.char="")
 colnames(Toxin_kmers) = c('Sample','Species','kmer','count')
+
+Reads<-read.csv("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/0.5_Read_Counts.csv")
+Reads<-Reads[,1:3]
+Reads$Reads<-as.integer(as.character(Reads$Reads))
+#colnames(Toxin_kmers) = c('Sample','Species','kmer','count')
+
 ```
+
+
+Import diet data
+```{r Import diet data}
+MPD <- read.delim("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/TaxData_WithPyrrhus.txt")
+rownames(MPD)<-MPD$Species
+```
+
+
 
 
 Use the self-made functions to create new dataframes that summarize data
 ```{r Use the self-made functions to create new dataframes that summarize data, include=FALSE}
-Ave_Toxin_Counts<-Average_toxins_count(Toxin_counts)
 Ave_clustered_Toxin_Counts<-Average_toxins_count(clustered_Toxin_counts)
 
 Kmer_diversity<-Summarize_kmer_diversity(Toxin_kmers)
@@ -744,10 +760,154 @@ all(Kmer_diversity_table[,1] == SVSP_expression_species_reordered[,1])
 Now combine into one datatable and set rownames as lineages
 ```{r combine into one datatable, include=FALSE}
 Venom_data<-cbind(Species_sample_numbers_reordered[,1:2],Ave_clustered_Toxin_Counts$ave_toxins,Kmer_diversity_table$Ave_H,RSEM_species_evenness_reordered$Ave_TPM_H,RSEM_family_species_diversity_reordered$Ave_TPM_H,RSEM_family_species_diversity_reordered$Ave_Families_count,PLA2_expression_species_reordered$Ave_Tox_count,PLA2_expression_species_reordered$Ave_mean_clrTPM,SVMP_expression_species_reordered$Ave_Tox_count,SVMP_expression_species_reordered$Ave_mean_clrTPM,CTL_expression_species_reordered$Ave_Tox_count,CTL_expression_species_reordered$Ave_mean_clrTPM,SVSP_expression_species_reordered$Ave_Tox_count,SVSP_expression_species_reordered$Ave_mean_clrTPM)
+
 colnames(Venom_data) =c('Species','Sample_number','GC','SD','ED','Family_ED','TFC','PLA2_num','PLA2_mean','SVMP_num','SVMP_mean','CTL_num','CTL_mean','SVSP_num','SVSP_mean')
+
 row.names(Venom_data) = Venom_data[,1]
+
+# Drop some rows of hybrid individuals from the dataset 
+Venom_data<-Venom_data[-c(3),]
+
+Venom_data<-Venom_data[-c(7),]
+
+Venom_data<-Venom_data[-c(33),]
+
+
 ```
 
+
+Check for rows in MPD and Venom data
+```{r Check for rows in MPD and Venom data}
+
+MPD_species =  match(MPD$Species,Venom_data$Species)
+
+MPD_Venom_data<-Venom_data[MPD_species,]
+
+MPD_Venom_data<-cbind(MPD_Venom_data,MPD$mpd.obs.z)
+if (colnames(MPD_Venom_data)[16] == "MPD$mpd.obs.z"){colnames(MPD_Venom_data)[16] = c("DB")}
+```
+
+
+Collect info for assessing technical variation.
+```{r}
+Kmer_diversity<-as.data.frame(Kmer_diversity)
+species_idx = match(clustered_Toxin_counts[,1],Kmer_diversity[,1])
+Kmer_diversity_reordered<-Kmer_diversity[species_idx,]
+
+RSEM_sample_evenness<-as.data.frame(RSEM_sample_evenness)
+species_idx_2 =  match(clustered_Toxin_counts[,1],as.data.frame(RSEM_sample_evenness)[,1])
+RSEM_sample_evenness_reordered<-RSEM_sample_evenness[species_idx_2,]
+
+Reads<-as.data.frame(Reads)
+species_idx_3 = match(clustered_Toxin_counts[,1],Reads[,1])
+Reads_reordered<-Reads[species_idx_3,]
+
+```
+
+
+Need to fix the toxin groups because there are some samples without certain toxins
+```{r}
+
+PLA2_expression_sample_fixed<-as.data.frame(PLA2_expression_sample)
+for (i in 1:nrow(clustered_Toxin_counts)){
+  if (clustered_Toxin_counts$Sample[i] %in% PLA2_expression_sample$Sample){next}
+  else{
+    entry<-c(as.character(clustered_Toxin_counts$Sample[i]),as.character(clustered_Toxin_counts$Species[i]),"PLA2",as.numeric(0),
+      as.numeric(0),as.numeric(0),as.numeric(0),NA,NA,NA,as.numeric(0),as.numeric(0),as.numeric(0))
+  }
+  PLA2_expression_sample_fixed<-rbind(PLA2_expression_sample_fixed,entry)
+}
+
+
+CTL_expression_sample_fixed<-as.data.frame(CTL_expression_sample)
+for (i in 1:nrow(clustered_Toxin_counts)){
+  if (clustered_Toxin_counts$Sample[i] %in% CTL_expression_sample$Sample){next}
+  else{
+    entry<-c(as.character(clustered_Toxin_counts$Sample[i]),as.character(clustered_Toxin_counts$Species[i]),"CTL",as.numeric(0),
+      as.numeric(0),as.numeric(0),as.numeric(0),NA,NA,NA,as.numeric(0),as.numeric(0),as.numeric(0))
+  }
+  CTL_expression_sample_fixed<-rbind(CTL_expression_sample_fixed,entry)
+}
+
+SVMP_expression_sample_fixed<-as.data.frame(SVMP_expression_sample)
+for (i in 1:nrow(clustered_Toxin_counts)){
+  if (clustered_Toxin_counts$Sample[i] %in% SVMP_expression_sample$Sample){next}
+  else{
+    entry<-c(as.character(clustered_Toxin_counts$Sample[i]),as.character(clustered_Toxin_counts$Species[i]),"SVMP",as.numeric(0),
+      as.numeric(0),as.numeric(0),as.numeric(0),NA,NA,NA,as.numeric(0),as.numeric(0),as.numeric(0))
+  }
+ SVMP_expression_sample_fixed<-rbind(SVMP_expression_sample_fixed,entry)
+}
+
+SVSP_expression_sample_fixed<-as.data.frame(SVSP_expression_sample)
+for (i in 1:nrow(clustered_Toxin_counts)){
+  if (clustered_Toxin_counts$Sample[i] %in% SVSP_expression_sample$Sample){next}
+  else{
+    entry<-c(as.character(clustered_Toxin_counts$Sample[i]),as.character(clustered_Toxin_counts$Species[i]),"SVSP",as.numeric(0),
+      as.numeric(0),as.numeric(0),as.numeric(0),NA,NA,NA,as.numeric(0),as.numeric(0),as.numeric(0))
+  }
+  SVSP_expression_sample_fixed<-rbind(SVSP_expression_sample_fixed,entry)
+}
+
+
+
+species_idx_4 = match(clustered_Toxin_counts[,1],PLA2_expression_sample_fixed[,1])
+PLA2_expression_sample_reordered<-PLA2_expression_sample_fixed[species_idx_4,]
+
+species_idx_5 = match(clustered_Toxin_counts[,1],SVMP_expression_sample_fixed[,1])
+SVMP_expression_sample_reordered<-SVMP_expression_sample_fixed[species_idx_5,]
+
+species_idx_6 = match(clustered_Toxin_counts[,1],CTL_expression_sample_fixed[,1])
+CTL_expression_sample_reordered<-CTL_expression_sample_fixed[species_idx_6,]
+
+species_idx_7 = match(clustered_Toxin_counts[,1],SVSP_expression_sample_fixed[,1])
+SVSP_expression_sample_reordered<-SVSP_expression_sample_fixed[species_idx_7,]
+
+
+
+Indiv_Venom_data<-cbind(clustered_Toxin_counts, Kmer_diversity_reordered[,3], RSEM_sample_evenness_reordered[,3],
+                        PLA2_expression_sample_reordered$Tox_numbers,PLA2_expression_sample_reordered$mean_clrTPM,
+                        SVMP_expression_sample_reordered$Tox_numbers,SVMP_expression_sample_reordered$mean_clrTPM,
+                        CTL_expression_sample_reordered$Tox_numbers,CTL_expression_sample_reordered$mean_clrTPM,
+                        SVSP_expression_sample_reordered$Tox_numbers,SVSP_expression_sample_reordered$mean_clrTPM)
+
+
+## Also need to add MPD values to the individual table. These will be the species values repeated for each indivudal
+
+##First make a hash table where species are keys and MPD are values
+library(hash)
+species_mpd_hash<-hash(MPD_Venom_data$Species, MPD_Venom_data$DB)
+DB_values<-c()
+for (i in 1:nrow(Indiv_Venom_data)){
+  if (Indiv_Venom_data[i,2] %in% keys(species_mpd_hash)){
+  entry<-values(species_mpd_hash,Indiv_Venom_data[i,2])[[1]]
+  DB_values<-c(DB_values,entry)
+  } else{DB_values<-c(DB_values,NA)}
+}
+
+samples_transcript_num<-tibble(indiv=factor(), n_transcripts=integer())
+for (sample in unique(RSEM$ID)){
+  indiv_n_transcripts<-nrow(subset(RSEM,RSEM$ID == sample))
+  row<-tibble(indiv=sample, n_transcripts=indiv_n_transcripts)
+  samples_transcript_num<-rbind(samples_transcript_num,row)
+}
+samples_transcript_num<-as.data.frame(samples_transcript_num)
+
+species_idx_8 = match(clustered_Toxin_counts[,1],samples_transcript_num[,1])
+samples_transcript_num<-samples_transcript_num[species_idx_8,]
+
+Indiv_Venom_data<-cbind(Indiv_Venom_data,samples_transcript_num$n_transcripts,Reads_reordered$Reads)
+
+
+Indiv_Venom_data<-cbind(Indiv_Venom_data,DB_values)
+colnames(Indiv_Venom_data) =c('Sample','Species','GC','SD','ED','PLA2_num','PLA2_mean','SVMP_num','SVMP_mean','CTL_num','CTL_mean','SVSP_num','SVSP_mean','transcript_n','reads','DB')
+
+## Drop hybrids from the Individual dataset
+Indiv_Venom_data<-Indiv_Venom_data[-c(6,13,14,15,106),]
+
+Indiv_Venom_MPD<-subset(Indiv_Venom_data,is.na(Indiv_Venom_data$DB) == FALSE)
+
+```
 
 
 Import tree data
@@ -767,41 +927,37 @@ AstralTree<-drop.tip(AstralTree,extraneous_tips)
 AstralTree$tip.label[29]="Crotalus_durissus_collilineatus"
 plot(AstralTree,cex=0.40)
 
-```
 
-Remove some rows in the venom data that are not included in our tree (individuals labelled as hybrids)
-````{r drop hybrids, include=FALSE}
-
-Venom_data<-Venom_data[-c(3),]
-
-Venom_data<-Venom_data[-c(7),]
-
-Venom_data<-Venom_data[-c(33),]
 all(rownames(Venom_data) %in% AstralTree$tip.label)
-
 ```
 
 
-Import diet data
-```{r Import diet data}
-MPD <- read.delim("~/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/TaxData_WithPyrrhus.txt")
-rownames(MPD)<-MPD$Species
+
+
+
+
+Let's perform some very simple tests of the roles of assembly completeness (here represented by number of transcripts) and within species variation
+```{r}
+library("car")
+library(rr2)
+
+## First test if our explanatory variables vary according to assembly completeness
+GC_reads_lm<-lm(Indiv_Venom_data$GC~Indiv_Venom_data$reads)
+plot(Indiv_Venom_data$GC~Indiv_Venom_data$reads, pch=21,bg='gray',cex=1.5,
+     xlab='Number Merged Reads',ylab="Number Toxin Transcripts")
+abline(a=GC_reads_lm$coefficients[[1]],b=GC_reads_lm$coefficients[[2]],lty=2,lwd=3)
+summary(GC_reads_lm)
+Anova(lm(Indiv_Venom_data$GC~Indiv_Venom_data$Species*Indiv_Venom_data$reads))
+
+
+GC_trans_lm<-lm(Indiv_Venom_data$GC~Indiv_Venom_data$transcript_n)
+plot(Indiv_Venom_data$GC~Indiv_Venom_data$transcript_n, pch=21,bg='gray',cex=1.5,
+     xlab='Number Expressed Transcripts',ylab="Number Toxin Transcripts")
+abline(a=GC_trans_lm$coefficients[[1]],b=GC_trans_lm$coefficients[[2]], lty=2,lwd=3)
+summary(GC_trans_lm)
+Anova(lm(Indiv_Venom_data$GC~Indiv_Venom_data$Species*Indiv_Venom_data$transcript_n))
+
 ```
-
-
-Check for rows in MPD and Venom data
-```{r Check for rows in MPD and Venom data}
-
-MPD_species =  match(MPD$Species,Venom_data$Species)
-
-MPD_Venom_data<-Venom_data[MPD_species,]
-
-MPD_Venom_data<-cbind(MPD_Venom_data,MPD$mpd.obs.z)
-if (colnames(MPD_Venom_data)[16] == "MPD$mpd.obs.z"){colnames(MPD_Venom_data)[16] = c("DB")}
-
-```
-
-
 
 
 
@@ -832,6 +988,35 @@ SD_sig_K
 
 
 
+Assess within species variation
+```{r}
+library("cowplot")
+library("ggpubr")
+
+
+Venom_data[order(Venom_data$Sample_number),]
+
+ggboxplot(Indiv_Venom_data, x="Species", y="GC", fill="Species", add = "dotplot", add.params=list(size=0.6),legend="none",x.text.angle=90, order = Venom_data[order(Venom_data$Sample_number),]$Species,xlab="Lineage")+font("x.text", size = 10)
+
+
+ggboxplot(Indiv_Venom_data, x="Species", y="SD", fill="Species", add = "dotplot", add.params=list(size=0.6),legend="none",x.text.angle=90, order = Venom_data[order(Venom_data$Sample_number),]$Species,xlab="Lineage")+font("x.text", size = 10)
+
+
+
+ggboxplot(Indiv_Venom_data, x="Species", y="ED", fill="Species", add = "dotplot", add.params=list(size=0.6),legend="none",x.text.angle=90, order = Venom_data[order(Venom_data$Sample_number),]$Species,xlab="Lineage")+font("x.text", size = 10)
+
+
+```
+
+
+
+
+
+
+
+
+
+
 Make violin plots of Family comparisons
 ```{r}
 library(cowplot)
@@ -842,8 +1027,6 @@ Total_Four_families_Expression_data<-rbind(CTL_expression_species_reordered,PLA2
 Total_Four_families_Expression_data<-cbind(Total_Four_families_Expression_data,row.names(Total_Four_families_Expression_data))
 names(Total_Four_families_Expression_data)[13] <- "obs"
 
-Total_Four_families_Expression_data[23,]<-c('Crotalus_durissus_collilineatus',0,NA,NA,NA,NA,-1.89,NA,NA,NA,NA,'CTL',NA)
-Total_Four_families_Expression_data[24,]<-c('Crotalus_durissus_terrificus',0,NA,NA,NA,NA,-1.73,NA,NA,NA,NA,'CTL',NA)
 
 ## There are many columns in this dataset that will not be useful to us (e.g. estimates of variance), so we will remove them
 Four_families_Expression_data<-as.data.frame(cbind(as.character(Total_Four_families_Expression_data$i),Total_Four_families_Expression_data$Ave_Tox_count,Total_Four_families_Expression_data$Ave_mean_clrTPM,as.character(Total_Four_families_Expression_data$Toxin_Family)))
@@ -859,12 +1042,7 @@ Four_families_Expression_data$i<-as.factor(Four_families_Expression_data$i)
 Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Agkistrodon_piscivorus_hybrid')
 Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Agkistrodon_contortrix_hybrid')
 Four_families_Expression_data<-subset(Four_families_Expression_data,Four_families_Expression_data$i!='Crotalus_molossus_hybrid')
-## Exclude C. durissus CTL rows which are substantial outliers
-Four_families_Expression_data<-subset(Four_families_Expression_data,!(Four_families_Expression_data$Toxin_Family =='CTL' & Four_families_Expression_data$i=='Crotalus_durissus_collilineatus'))
-Four_families_Expression_data<-subset(Four_families_Expression_data,!(Four_families_Expression_data$Toxin_Family =='CTL' & Four_families_Expression_data$i=='Crotalus_durissus_terrificus'))
 
-
-##rownames(Four_families_Expression_data)<-Four_families_Expression_data$i
 
 Anova(lm(Four_families_Expression_data$Ave_mean_clrTPM~Four_families_Expression_data$i+Four_families_Expression_data$Toxin_Family))
 
@@ -931,7 +1109,8 @@ models <- define_model_set(
 )
 
 
-plot_model_set(models, algorithm = 'lgl')
+#plot_model_set(models, algorithm = 'lgl')
+plot_model_set(models)
 
 ```
 
@@ -944,18 +1123,19 @@ library(patchwork)
 diet_result_lam <- phylo_path(models, data = MPD_Venom_data, tree = AstralTree, model = 'lambda')
 diet_result_lam
 (diet_s_lam <- summary(diet_result_lam))
-diet_best_model_lam <- best(diet_result_lam)
-diet_average_model_lam <- average(diet_result_lam,avg_method = "conditional")
+diet_best_model_lam <- best(diet_result_lam, boot=500)
+diet_average_model_lam <- average(diet_result_lam,avg_method = "conditional", boot=500)
 
-diet_model1<-choice(diet_result_lam,"Model1")
+## because model 1 was within 2 CICc
+diet_model1<-choice(diet_result_lam,"Model1", boot=500)
 
 p1<-plot(diet_s_lam)
 p2<-plot(diet_best_model_lam, curvature = 0.05)
 p3<-plot(diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
-p4<-coef_plot(diet_best_model_lam,error_bar = 'ci')
-p5<-coef_plot(diet_average_model_lam,error_bar = 'se')
+p4<-coef_plot(diet_best_model_lam, error_bar = 'ci',order_by="causal")
+p5<-coef_plot(diet_average_model_lam,error_bar = 'ci',order_by="causal")
 p6<-plot(diet_model1, curvature = 0.05)
-p7<-coef_plot(diet_model1)
+p7<-coef_plot(diet_model1,error_bar = 'ci',order_by="causal")
 
 
 p1
@@ -964,6 +1144,28 @@ p3
 (p2 | p4) /
 (p6 | p7) /
 (p3 | p5)
+
+```
+
+Plots of the relationship between proximal estimates of sequence diversity and expression diversity against diet breadth.
+```{r}
+library(phylolm)
+library(rr2)
+
+pruned.tree<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_data), AstralTree$tip.label)])
+
+DB_SD<-phylolm(DB~SD, MPD_Venom_data, pruned.tree, model = c("lambda"))
+summary(DB_SD)
+R2(DB_SD,phy=pruned.tree)
+plot(MPD_Venom_data$DB~MPD_Venom_data$SD,pch=21,bg='darkgray',cex=2)
+abline(a=DB_SD$coefficients[[1]],b=DB_SD$coefficients[[2]], lty=2, lwd=4)
+
+
+DB_ED<-phylolm(DB~ED, MPD_Venom_data, pruned.tree, model = c("lambda"))
+summary(DB_ED)
+R2(DB_ED,phy=pruned.tree)
+plot(MPD_Venom_data$DB~MPD_Venom_data$ED,pch=21,bg='darkgray',cex=2)
+abline(a=DB_ED$coefficients[[1]],b=DB_ED$coefficients[[2]], lty=2, lwd=4)
 
 ```
 
@@ -1233,11 +1435,11 @@ SVSP_diet_result_lam <- phylo_path(models, data = MPD_SVSP_data, tree = AstralTr
 SVSP_diet_result_lam
 (SVSP_diet_s_lam <- summary(SVSP_diet_result_lam))
 (SVSP_diet_best_model_lam <- best(SVSP_diet_result_lam))
-#(SVSP_diet_best_model_lam2 <- choice(SVSP_diet_result_lam,"Model11"))
+(SVSP_diet_best_model_lam2 <- choice(SVSP_diet_result_lam,"Model7"))
 SVSP_diet_average_model_lam <- average(SVSP_diet_result_lam,avg_method = "conditional")
 
 p16<-plot(SVSP_diet_s_lam)
-p17<-plot(SVSP_diet_best_model_lam,col=c("blue","green"), algorithm = 'mds')
+p17<-plot(SVSP_diet_best_model_lam2,col=c("blue","green"), algorithm = 'mds')
 p18<-plot(SVSP_diet_average_model_lam, algorithm = 'mds', curvature = 0.05) # increase the curvature to avoid overlapping edges
 p19<-coef_plot(SVSP_diet_best_model_lam,error_bar = 'ci')
 p20<-coef_plot(SVSP_diet_average_model_lam,error_bar = 'ci')
@@ -1248,7 +1450,7 @@ p20<-coef_plot(SVSP_diet_average_model_lam,error_bar = 'ci')
 (p4 | p9 | p14 | p19) /
 (p5 | p10 | p15 | p20)
 
-
+setwd("~/Desktop")
 png("families_check.png", width=1080, height=1080)
 (p1 | p6 | p11 | p16) /
 (p2 | p7 | p12 | p17) /
@@ -1385,8 +1587,19 @@ pruned.tree<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_
 DB_v_PLA2_mean<-phylolm(DB~PLA2_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
 summary(DB_v_PLA2_mean)
 R2(DB_v_PLA2_mean,phy=pruned.tree)
+
+## Remove durissus to check it
+MPD_Venom_data_sansdurissus<-MPD_Venom_data[-c(10),]
+
+pruned.tree.one<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_data_sansdurissus), AstralTree$tip.label)])
+
+DB_v_PLA2_mean_nodurissus<-phylolm(DB~PLA2_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
+summary(DB_v_PLA2_mean_nodurissus)
+R2(DB_v_PLA2_mean_nodurissus,phy=pruned.tree.one)
+
 plot(MPD_Venom_data$DB~MPD_Venom_data$PLA2_mean,pch=21,bg='red1',cex=2)
 abline(a=DB_v_PLA2_mean$coefficients[[1]],b=DB_v_PLA2_mean$coefficients[[2]], lty=2, lwd=4)
+abline(a=DB_v_PLA2_mean_nodurissus$coefficients[[1]],b=DB_v_PLA2_mean_nodurissus$coefficients[[2]], lty=2, lwd=4,col="red3")
 
 DB_v_SVMP_mean<-phylolm(DB~SVMP_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
 summary(DB_v_SVMP_mean)
@@ -1394,42 +1607,16 @@ R2(DB_v_SVMP_mean,phy=pruned.tree)
 plot(MPD_Venom_data$DB~MPD_Venom_data$SVMP_mean,pch=21,bg='dodgerblue',cex=2)
 abline(a=DB_v_SVMP_mean$coefficients[[1]],b=DB_v_SVMP_mean$coefficients[[2]], lty=2, lwd=4)
 
+DB_v_CTL_mean<-phylolm(DB~CTL_mean, MPD_Venom_data, pruned.tree.one, model = c("lambda"))
+summary(DB_v_CTL_mean)
+R2(DB_v_CTL_mean,phy=pruned.tree.one)
+plot(MPD_Venom_data$DB~MPD_Venom_data$CTL_mean,pch=21,bg='yellow1',cex=2)
+abline(a=DB_v_CTL_mean$coefficients[[1]],b=DB_v_CTL_mean$coefficients[[2]], lty=2, lwd=4)
+
 DB_v_SVSP_mean<-phylolm(DB~SVSP_mean, MPD_Venom_data, pruned.tree, model = c("lambda"))
 summary(DB_v_SVSP_mean)
 R2(DB_v_SVSP_mean,phy=pruned.tree)
 plot(MPD_Venom_data$DB~MPD_Venom_data$SVSP_mean,pch=21,bg='chartreuse3',cex=2)
-abline(a=DB_v_SVSP_mean$coefficients[[1]],b=DB_v_SVSP_mean$coefficients[[2]], lty=2, lwd=4)
-
-
-
-## Remove durissus to check it
-MPD_Venom_data_sansdurissus<-MPD_Venom_data[-c(10),]
-
-pruned.tree.one<-drop.tip(AstralTree,AstralTree$tip.label[-match(rownames(MPD_Venom_data_sansdurissus), AstralTree$tip.label)])
-
-DB_v_PLA2_mean<-phylolm(DB~PLA2_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
-summary(DB_v_PLA2_mean)
-R2(DB_v_PLA2_mean,phy=pruned.tree.one)
-plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$PLA2_mean,pch=21,bg='red1',cex=2)
-abline(a=DB_v_PLA2_mean$coefficients[[1]],b=DB_v_PLA2_mean$coefficients[[2]], lty=2, lwd=4)
-
-DB_v_SVMP_mean<-phylolm(DB~SVMP_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
-summary(DB_v_SVMP_mean)
-R2(DB_v_SVMP_mean,phy=pruned.tree.one)
-plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$SVMP_mean,pch=21,bg='dodgerblue3',cex=2)
-abline(a=DB_v_SVMP_mean$coefficients[[1]],b=DB_v_SVMP_mean$coefficients[[2]], lty=2, lwd=4)
-
-
-DB_v_CTL_mean<-phylolm(DB~CTL_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
-summary(DB_v_CTL_mean)
-R2(DB_v_CTL_mean,phy=pruned.tree.one)
-plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$CTL_mean,pch=21,bg='yellow1',cex=2)
-abline(a=DB_v_CTL_mean$coefficients[[1]],b=DB_v_CTL_mean$coefficients[[2]], lty=2, lwd=4)
-
-DB_v_SVSP_mean<-phylolm(DB~SVSP_mean, MPD_Venom_data_sansdurissus, pruned.tree.one, model = c("lambda"))
-summary(DB_v_SVSP_mean)
-R2(DB_v_SVSP_mean,phy=pruned.tree.one)
-plot(MPD_Venom_data_sansdurissus$DB~MPD_Venom_data_sansdurissus$SVSP_mean,pch=21,bg='chartreuse3',cex=2)
 abline(a=DB_v_SVSP_mean$coefficients[[1]],b=DB_v_SVSP_mean$coefficients[[2]], lty=2, lwd=4)
 
 
@@ -1451,15 +1638,22 @@ Lets add some information about the relationship betweeen sequence data and expr
 library(ggplot2)
 library(hrbrthemes)
 library(cowplot)
+library(multimode)
 
-All_SVMPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/9.3_SVMP_alignments/X_All_SVMPs/muscle/All_SVMP_muscle_aln.faa.treefile_edited')
+All_SVMPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/9.3_SVMP_alignments/All_SVMPs/All_SVMP_muscle_aln.faa.treefile')
 
 
 SVMP_MPD_table<-Toxin_expression_MPD_TPM(SVMP_RSEM,All_SVMPs_iqtree)
+#Drop hybrids
+SVMP_MPD_table<-SVMP_MPD_table[-c(6,12,16,20,114),]
+
 
 
 SVMP_MPD_summary<-as.data.frame(summarize_toxin_MPD_species(SVMP_MPD_table))
 row.names(SVMP_MPD_summary)=SVMP_MPD_summary[,1]
+
+ggboxplot(SVMP_MPD_table, x="Species", y="ses.mpd.z", fill="deepskyblue", add = "dotplot", add.params=list(size=0.6),legend="none",x.text.angle=90, ylab = "standardized MGD SVMP", xlab = "Lineage", order=SVMP_MPD_summary[order(SVMP_MPD_summary$ses.mpd.z),]$species)+font("x.text", size = 10)
+
 
 
 MPD_not_in_data<-SVMP_MPD_summary[,1][!SVMP_MPD_summary[,1] %in% SVMP_data[,1]] 
@@ -1486,6 +1680,12 @@ SVMP_densities_plot <- ggplot(data=SVMP_densities, aes(x=SVMP_ses_mpd_set)) +
     theme_cowplot()
 SVMP_densities_plot
 
+wilcox.test(SVMP_MPD_final$ses.mpd.z,mu=0, alternative = "two.sided")
+
+SVMP_mode1<-subset(SVMP_MPD_final,SVMP_MPD_final$ses.mpd.z <= -1)
+SVMP_mode2<-subset(SVMP_MPD_final,SVMP_MPD_final$ses.mpd.z > -1)
+SVMP_mode2.1<-subset(SVMP_MPD_final,SVMP_MPD_final$ses.mpd.z > -1 & SVMP_MPD_final$ses.mpd.z < 0.7)
+SVMP_mode2.2<-subset(SVMP_MPD_final,SVMP_MPD_final$ses.mpd.z > 0.7)
 
 ## plot to see differences 
 ses_mpd_model<-lm(SVMP_MPD_final$weighted.ses.mpd.z~SVMP_MPD_final$ses.mpd.z)
@@ -1531,13 +1731,22 @@ ggplot(SVMP_diet_MPD,aes(SVMP_ses.mpd.z,DB))+geom_point(aes(size=1.5),colour='de
 
 ```{r SVSP assessment}
 
-All_SVSPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/Data_Analysis/9.4_SVSP_alignments/X_All_SVSPs/muscle/All_SVSP_muscle_aln.faa.treefile')
+All_SVSPs_iqtree<-read.newick('/Users/andrewmason/Dropbox/Andrew/DataSets_Manuscripts/Crotalus_reanalysis/project_github/Statistical_Analyses_For_Phylogenetic_Comparisons_of_North_American_Pitviper_Transcriptomes/input_data/9.4_SVSP_alignments/All_SVSPs/All_SVSP_muscle_aln.faa.treefile')
 
 SVSP_MPD_table<-Toxin_expression_MPD_TPM(SVSP_RSEM,All_SVSPs_iqtree)
+SVSP_MPD_table<-SVSP_MPD_table[-c(6,12,16,20,115),]
+
 
 
 SVSP_MPD_summary<-as.data.frame(summarize_toxin_MPD_species(SVSP_MPD_table))
 row.names(SVSP_MPD_summary)=SVSP_MPD_summary[,1]
+
+ggboxplot(SVSP_MPD_table, x="Species", y="ses.mpd.z", fill="green3", add = "dotplot", add.params=list(size=0.6),legend="none",x.text.angle=90, ylab = "standardized MGD SVSP",xlab="Lineage",order=SVSP_MPD_summary[order(SVSP_MPD_summary$ses.mpd.z),]$species)+font("x.text")+font("x.text", size = 10)
+
+
+
+
+
 
 
 SVSP_MPD_not_in_data<-SVSP_MPD_summary[,1][!SVSP_MPD_summary[,1] %in% SVSP_data[,1]] 
@@ -1564,6 +1773,13 @@ SVSP_densities_plot <- ggplot(data=SVSP_densities, aes(x=SVSP_ses_mpd_set)) +
     scale_x_continuous(name="MPDsvsp", limits=c(-3, 1.5))+
     theme_cowplot()
 SVSP_densities_plot
+
+
+wilcox.test(SVSP_MPD_final$ses.mpd.z,mu=0, alternative = "two.sided")
+
+
+SVSP_mode1<-subset(SVSP_MPD_final,SVSP_MPD_final$ses.mpd.z <= 0.3)
+SVSP_mode2<-subset(SVSP_MPD_final,SVSP_MPD_final$ses.mpd.z > 0.3)
 
 
 ## plot to see differences 
@@ -1606,8 +1822,7 @@ ggplot(SVSP_diet_MPD,aes(SVSP_ses.mpd.z,DB))+geom_point(aes(size=1.5),colour='gr
 
 ```
 
-
-
+f
 
 
 ```{r Figure for examining GC, EE, and SD across the tree}
@@ -1632,21 +1847,9 @@ name_d <- data.frame(label = tree@phylo$tip.label, name = new_labels)
 
 bar_data<-data.frame(id=Venom_data$Species,ED=Venom_data$ED,SD=Venom_data$SD)
 
-p1 <- ggtree(tree, aes(color=trait), ladderize = FALSE, continuous = TRUE, size=1.5) %<+% name_d + scale_color_gradientn(colours=c('#DB9E11','#1DBCDB',"#1A7C8F", '#341A8F', '#3607DB')) + geom_tiplab(cex=2.5,aes(label=paste(name)),col='black')+
-  
-  geom_facet(panel = "ED", data = bar_data, geom = ggstance::geom_barh, 
-                aes(x = ED), 
-                stat = "identity", width = .5) + xlim_tree(37) +
-  geom_facet(panel = "SD", data = bar_data, geom = ggstance::geom_barh, 
-                aes(x = SD), 
-                stat = "identity", width = .5) + xlim_tree(37)
-  
-p1
-facet_widths(p1,c(3,1,1))
 
 
-
-p1<- ggtree(tree, aes(color=trait), ladderize = FALSE, continuous = TRUE, size=1.5) %<+% name_d + scale_color_gradientn(colours=c('#DB9E11','#1DBCDB',"#1A7C8F", '#341A8F', '#3607DB')) + geom_tiplab(cex=2.5,aes(label=paste(name)),col='black')
+p1<- ggtree(tree, aes(color=trait), ladderize = FALSE, continuous = TRUE, size=1.5) %<+% name_d + scale_color_gradientn(colours=topo.colors(n=40)) + geom_tiplab(cex=2.5,aes(label=paste(name)),col='black')
 
 p2 <- facet_plot(p1 + xlim_tree(40), panel = 'ED', data = bar_data, geom = ggstance::geom_barh, mapping = aes(x = ED),fill=c('#DB9E11'), 
                  width = 0.6, stat='identity',colour=c('black'))
